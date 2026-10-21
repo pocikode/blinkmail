@@ -19,15 +19,3 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
-
----
-
-Blinkmail incorporates code and assets derived from Tempik:
-
-  Tempik — Disposable Temp Mail on Cloudflare Workers
-  Copyright (c) 2026 masantoid
-  Licensed under the MIT License
-  https://github.com/hirotomasato/tempik
-
-The MIT license text above applies to that reused material as well. Specific
-attribution for each reused component is listed in NOTICE.

@@ -1,8 +1,8 @@
 -- 001_init: Blinkmail base schema.
 --
--- Preserves the four-table model of the Tempik reference implementation
--- (MIT License, Copyright (c) 2026 masantoid) and adds only what Blinkmail
--- needs for delivery deduplication and safe operation:
+-- Defines the four-table model (inboxes, messages, sessions,
+-- session_inboxes) plus what Blinkmail needs for delivery deduplication and
+-- safe operation:
 --
 --   * messages.delivery_hash  UNIQUE  - dedupes repeated Email Worker deliveries
 --   * messages.subject/body   NOT NULL - prevents a parser writing NULL past the default

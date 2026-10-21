@@ -1,8 +1,8 @@
 // Package store owns all SQLite persistence for Blinkmail.
 //
-// It keeps the four-table model of the Tempik reference implementation
-// (inboxes, messages, sessions, session_inboxes) and adds a unique
-// delivery_hash column for deduplicating repeated Email Worker deliveries.
+// It uses a four-table model (inboxes, messages, sessions, session_inboxes)
+// with a unique delivery_hash column for deduplicating repeated Email Worker
+// deliveries.
 //
 // Every query uses bound parameters. No user input is ever interpolated into
 // SQL.

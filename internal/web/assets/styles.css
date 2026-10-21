@@ -1,16 +1,10 @@
 /*
  * Blinkmail stylesheet.
  *
- * Derived from the Tempik reference implementation's src/web/styles.css.
- * Tempik is Copyright (c) 2026 masantoid and is licensed under the MIT License;
- * the full notice is reproduced in LICENSE and NOTICE at the repository root.
- *
- * Local changes:
- *   - Removed the external Google Fonts @import so the served asset bundle is
- *     self-contained and does not leak visitor IPs to a third-party CDN. The
- *     existing font stack already falls back to system fonts.
- *   - Appended Blinkmail additions at the end of the file (labels, public
- *     address notice, error banners, focus-visible rings).
+ * The bundle is self-contained: no external font @import, so serving it does
+ * not leak visitor IPs to a third-party CDN. The font stack falls back to
+ * system fonts. Labels, the public-address notice, error banners, and
+ * focus-visible rings are defined at the end of the file.
  */
 
 
@@ -611,20 +605,4 @@ a:focus-visible {
 
 .message-list[aria-busy="true"] {
   opacity: 0.6;
-}
-
-/* ---------------------------------- Footer ---------------------------------- */
-.attribution {
-  margin-top: 6px;
-  font-size: 11px;
-  color: var(--text-muted);
-  line-height: 1.6;
-}
-
-.attribution a {
-  color: var(--text-muted);
-}
-
-.attribution a:hover {
-  color: var(--accent-soft);
 }

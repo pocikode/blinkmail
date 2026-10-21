@@ -7,13 +7,6 @@ Blinkmail is a Go HTTP server backed by SQLite, deployed in Docker on a VPS,
 with Cloudflare Email Routing forwarding inbound mail through a small Email
 Worker relay.
 
-It is a reimplementation of [Tempik](https://github.com/hirotomasato/tempik)
-(MIT License, Copyright (c) 2026 masantoid), which ran entirely on Cloudflare
-Workers with D1. Blinkmail keeps Tempik's four-table data model, API shapes, and
-web UI workflow, but moves the application to a VPS and fixes several correctness
-and security problems in the reference. See [NOTICE](NOTICE) for a file-by-file
-account of what was reused and what was changed.
-
 ## Read this first: addresses are public
 
 Every address on a Blinkmail instance is readable by anyone who knows it. A
@@ -300,14 +293,14 @@ runs on Cloudflare's network and cannot reach `127.0.0.1` on your VPS.
 
 ## Delivery semantics
 
-This is the area where Blinkmail deliberately differs from the reference, so it
-is worth stating plainly.
+Delivery failures are handled explicitly, so the semantics are worth stating
+plainly.
 
-**The reference lost mail silently.** Tempik's `email()` handler wrapped
-everything in a `try/catch` that logged the error and returned normally. Cloudflare
-interprets a normal return as successful delivery, so a parse failure, a database
-error, or an oversized message was acknowledged and then discarded, with no bounce
-and no retry.
+**A relay that swallows errors loses mail silently.** If the Worker's `email()`
+handler wraps everything in a `try/catch` that logs the error and returns
+normally, Cloudflare interprets the normal return as successful delivery, so a
+parse failure, a database error, or an oversized message is acknowledged and
+then discarded, with no bounce and no retry.
 
 **Blinkmail reports failures honestly:**
 
@@ -474,6 +467,5 @@ storage.
 
 ## License
 
-MIT. See [LICENSE](LICENSE). Portions derived from
-[Tempik](https://github.com/hirotomasato/tempik) (MIT, Copyright (c) 2026
-masantoid); see [NOTICE](NOTICE).
+MIT. See [LICENSE](LICENSE). Third-party dependencies are listed in
+[NOTICE](NOTICE).

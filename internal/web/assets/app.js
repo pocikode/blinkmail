@@ -1,19 +1,14 @@
 /*
  * Blinkmail web client.
  *
- * Workflows are ported from the Tempik reference implementation (MIT License,
- * Copyright (c) 2026 masantoid); see LICENSE and NOTICE.
- *
- * The one thing deliberately NOT ported is how messages are rendered. The
- * reference built message markup by interpolating sender, subject and body into
- * innerHTML, so any HTML or script in an incoming email executed in the reader's
- * browser. Everything untrusted here goes through textContent and
- * createElement instead, which makes injected markup inert.
+ * Messages are rendered safely: everything untrusted goes through textContent
+ * and createElement rather than innerHTML, so any HTML or script in an incoming
+ * email is left as inert text instead of executing in the reader's browser.
  */
 'use strict';
 
-// Blinkmail-specific storage key. Using the reference's key would silently
-// inherit a token from an unrelated Tempik deployment on the same origin.
+// Blinkmail-specific storage key, scoped so the session token cannot collide
+// with another application on the same origin.
 var SESSION_KEY = 'blinkmail_session_id';
 
 var els = {

@@ -13,8 +13,8 @@
  *
  * Why this catches regressions: linkedom's innerHTML setter parses markup into
  * real element nodes (it has no JS engine, so scripts don't run, but the nodes
- * exist). So if app.js were changed to render messages via innerHTML — as the
- * Tempik reference did — the payload would appear here as live
+ * exist). So if app.js were changed to render messages via innerHTML, the
+ * payload would appear here as live
  * <script>/<img>/<a> elements and these assertions would fail. Rendering
  * through textContent/createElement leaves the same payload as inert text.
  *

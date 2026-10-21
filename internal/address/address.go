@@ -1,8 +1,5 @@
 // Package address handles email address validation and generation of
 // human-like random local parts.
-//
-// The random word lists are ported from the Tempik reference implementation
-// (MIT License, Copyright (c) 2026 masantoid); see NOTICE for attribution.
 package address
 
 import (
@@ -141,8 +138,8 @@ func ValidateEnvelopeFrom(from string) error {
 	return Validate(f)
 }
 
-// The word lists below are ported from the Tempik reference implementation
-// (MIT License, Copyright (c) 2026 masantoid).
+// The word lists below supply the vocabulary used to build human-like random
+// local parts.
 var (
 	// firstWords are opening word choices.
 	firstWords = []string{

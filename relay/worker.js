@@ -6,12 +6,10 @@
  * Blinkmail application's authenticated POST /api/inbound endpoint, which does
  * the parsing and storage.
  *
- * Design notes that differ from the Tempik reference handler on purpose:
- *   - The reference logged a failure and returned normally, so Cloudflare ACKed
- *     a message it had actually lost. This Worker distinguishes a permanent
- *     rejection (message.setReject) from a transient failure (throw, which
- *     Cloudflare may retry) and never ACKs a message the app did not commit.
- *     See README "Delivery semantics".
+ * Design notes on failure handling:
+ *   - This Worker distinguishes a permanent rejection (message.setReject) from
+ *     a transient failure (throw, which Cloudflare may retry) and never ACKs a
+ *     message the app did not commit. See README "Delivery semantics".
  *   - The envelope recipient is forwarded verbatim; the app, not the MIME To
  *     header, decides routing.
  *   - Oversized messages are rejected before forwarding using rawSize, so the
