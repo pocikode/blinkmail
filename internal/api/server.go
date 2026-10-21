@@ -48,10 +48,31 @@ const (
 	inboundTimeout = 120 * time.Second
 )
 
+// Store is the persistence surface the API depends on. Declaring it as an
+// interface here (rather than importing the concrete *store.Store) lets tests
+// inject failures — for example proving that a storage error on the inbound
+// path surfaces as a 5xx and never as a successful acknowledgment.
+//
+// *store.Store satisfies this interface.
+type Store interface {
+	SessionExists(ctx context.Context, sessionID string) (bool, error)
+	CreateSession(ctx context.Context, sessionID string) error
+	CreateInbox(ctx context.Context, address string) error
+	ClaimInbox(ctx context.Context, address string) error
+	GetInbox(ctx context.Context, address string) (store.Inbox, error)
+	SessionInboxes(ctx context.Context, sessionID string) ([]store.Inbox, error)
+	LinkInboxToSession(ctx context.Context, sessionID, address string) error
+	UnlinkInboxFromSession(ctx context.Context, sessionID, address string) error
+	IsInboxInSession(ctx context.Context, sessionID, address string) (bool, error)
+	Messages(ctx context.Context, address string) ([]store.Message, error)
+	DeliverMessage(ctx context.Context, m store.NewMessage) error
+	CountMessages(ctx context.Context) (int, error)
+}
+
 // Server wires configuration, storage and routing together.
 type Server struct {
 	cfg   config.Config
-	store *store.Store
+	store Store
 	log   *slog.Logger
 	gen   address.Generator
 	mux   *http.ServeMux
@@ -60,7 +81,7 @@ type Server struct {
 // Deps holds the collaborators a Server needs.
 type Deps struct {
 	Config config.Config
-	Store  *store.Store
+	Store  Store
 	Logger *slog.Logger
 	// Assets serves the embedded frontend. May be nil in tests.
 	Assets http.Handler
