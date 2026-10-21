@@ -57,7 +57,7 @@ func (s *Store) ClaimInbox(ctx context.Context, address string) error {
 		address, formatTime(NowUTC()),
 	)
 	if err != nil {
-		if isUniqueViolation(err) {
+		if isAddressTaken(err) {
 			return fmt.Errorf("%w: %s", ErrAddressTaken, address)
 		}
 		return fmt.Errorf("store: claim inbox %q: %w", address, err)
@@ -238,7 +238,7 @@ func (s *Store) DeliverMessage(ctx context.Context, m NewMessage) error {
 		VALUES (?, ?, ?, ?, ?, ?, ?)`,
 		m.ID, m.Inbox, m.From, m.Subject, m.Body, now, nullIfEmpty(m.DeliveryKey),
 	); err != nil {
-		if isUniqueViolation(err) {
+		if isDuplicateDelivery(err) {
 			return ErrDuplicateDelivery
 		}
 		return fmt.Errorf("store: insert message: %w", err)

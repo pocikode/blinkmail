@@ -40,6 +40,14 @@ var (
 )
 
 // SQLite extended result codes for constraint violations.
+//
+// The distinction matters: every PRIMARY KEY in this schema (inboxes.address,
+// sessions.id, session_inboxes composite, messages.id) is a TEXT key backed by
+// a unique index and reports SQLITE_CONSTRAINT_PRIMARYKEY (1555). The only
+// explicit UNIQUE constraint is messages.delivery_hash, which reports
+// SQLITE_CONSTRAINT_UNIQUE (2067). Treating the two alike would let a messages.id
+// clash be misread as a duplicate delivery and acknowledged, losing a distinct
+// message; so each collision site matches exactly the code it expects.
 const (
 	codeConstraintUnique  = 2067 // SQLITE_CONSTRAINT_UNIQUE
 	codeConstraintPrimary = 1555 // SQLITE_CONSTRAINT_PRIMARYKEY
@@ -185,15 +193,25 @@ func writeFramed(h hash.Hash, s string) {
 	h.Write([]byte(s))
 }
 
-// isUniqueViolation reports whether err is a SQLite UNIQUE or PRIMARY KEY
-// constraint failure.
-func isUniqueViolation(err error) bool {
+// sqliteCode extracts the extended result code from a driver error, or -1.
+func sqliteCode(err error) int {
 	var coder interface{ Code() int }
 	if errors.As(err, &coder) {
-		switch coder.Code() {
-		case codeConstraintUnique, codeConstraintPrimary:
-			return true
-		}
+		return coder.Code()
 	}
-	return false
+	return -1
+}
+
+// isDuplicateDelivery reports whether err is a UNIQUE violation on
+// messages.delivery_hash (2067) — i.e. this exact delivery was already
+// committed. A PRIMARY KEY clash on messages.id is deliberately excluded: that
+// is a distinct message with a colliding ID and must surface as an error.
+func isDuplicateDelivery(err error) bool {
+	return sqliteCode(err) == codeConstraintUnique
+}
+
+// isAddressTaken reports whether err is a PRIMARY KEY violation on
+// inboxes.address (1555), meaning the address already exists.
+func isAddressTaken(err error) bool {
+	return sqliteCode(err) == codeConstraintPrimary
 }
