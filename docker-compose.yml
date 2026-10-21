@@ -1,0 +1,57 @@
+# Blinkmail — single-service Compose deployment.
+#
+# Copy .env.example to .env, fill in your domains and a strong secret, then:
+#   docker compose up -d --build
+#
+# The application listens on :8080 inside the container. The published port is
+# bound to localhost by default: put a TLS-terminating reverse proxy in front of
+# it rather than exposing 8080 to the internet directly. See README "HTTPS".
+
+services:
+  blinkmail:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: blinkmail:latest
+    container_name: blinkmail
+    restart: unless-stopped
+
+    # Bind to loopback so the app is not directly reachable from outside the
+    # host. Change to "8080:8080" only if you terminate TLS at this port, which
+    # is not recommended.
+    ports:
+      - "127.0.0.1:8080:8080"
+
+    environment:
+      BLINKMAIL_LISTEN_ADDR: ":8080"
+      BLINKMAIL_DB_PATH: "/data/blinkmail.db"
+      BLINKMAIL_APP_NAME: "${BLINKMAIL_APP_NAME:-Blinkmail}"
+      BLINKMAIL_MAIL_DOMAINS: "${BLINKMAIL_MAIL_DOMAINS:?set BLINKMAIL_MAIL_DOMAINS in .env}"
+      BLINKMAIL_WEB_HOST: "${BLINKMAIL_WEB_HOST:?set BLINKMAIL_WEB_HOST in .env}"
+      # Must match the relay Worker's INBOUND_SECRET.
+      BLINKMAIL_INBOUND_SECRET: "${BLINKMAIL_INBOUND_SECRET:?set BLINKMAIL_INBOUND_SECRET in .env}"
+      BLINKMAIL_MAX_INBOUND_BYTES: "${BLINKMAIL_MAX_INBOUND_BYTES:-26214400}"
+      BLINKMAIL_LOG_LEVEL: "${BLINKMAIL_LOG_LEVEL:-info}"
+
+    volumes:
+      # Named volume persists the SQLite database across container rebuilds and
+      # restarts. Removing the container keeps this data; removing the volume
+      # (docker compose down -v) destroys it.
+      - blinkmail-data:/data
+
+    # Run as the image's non-root user; the distroless nonroot user (uid 65532)
+    # owns the volume so SQLite can write the database and its WAL files.
+    security_opt:
+      - no-new-privileges:true
+    # The filesystem is not read-only: SQLite writes WAL and journal files
+    # alongside the database in /data. Everything else in the image is static.
+
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/blinkmail", "-healthcheck"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+
+volumes:
+  blinkmail-data:
