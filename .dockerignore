@@ -1,0 +1,32 @@
+# Keep the build context minimal and free of secrets/local state.
+.git/
+.gitignore
+.dockerignore
+
+# Local database files and volumes
+*.db
+*.db-shm
+*.db-wal
+data/
+
+# Secrets and environment files
+.env
+.env.*
+!.env.example
+
+# Build output
+blinkmail
+dist/
+*.exe
+*.test
+
+# Worker tooling (the relay image is not built here)
+node_modules/
+.wrangler/
+relay/
+
+# Docs and planning notes
+PLAN.md
+*.log
+.DS_Store
+._*

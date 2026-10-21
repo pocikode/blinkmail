@@ -1,0 +1,30 @@
+# Build artifacts
+/blinkmail
+/dist/
+*.exe
+*.test
+*.out
+
+# Local database files
+*.db
+*.db-shm
+*.db-wal
+/data/
+
+# Environment and secrets
+.env
+.env.*
+!.env.example
+
+# Node / Worker tooling
+node_modules/
+.wrangler/
+
+# OS and editor noise
+.DS_Store
+._*
+*.log
+*.swp
+
+# Planning notes are intentionally not tracked
+PLAN.md
