@@ -1,0 +1,17 @@
+{
+  "name": "blinkmail-relay",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Cloudflare Email Worker relay for Blinkmail. Forwards raw MIME to POST /api/inbound.",
+  "scripts": {
+    "test": "node --test",
+    "deploy": "wrangler deploy",
+    "dev": "wrangler dev",
+    "secret": "wrangler secret put INBOUND_SECRET"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20250509.0",
+    "wrangler": "^4.105.0"
+  }
+}
