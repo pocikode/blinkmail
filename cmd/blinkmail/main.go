@@ -172,9 +172,9 @@ func run() error {
 	return nil
 }
 
-// logLevel reads BLINKMAIL_LOG_LEVEL, defaulting to info.
+// logLevel reads LOG_LEVEL, defaulting to info.
 func logLevel() slog.Level {
-	switch os.Getenv("BLINKMAIL_LOG_LEVEL") {
+	switch os.Getenv("LOG_LEVEL") {
 	case "debug":
 		return slog.LevelDebug
 	case "warn":

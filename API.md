@@ -19,7 +19,7 @@ There are two distinct auth mechanisms:
    confidentiality boundary: inboxes are public by address.
 
 2. **Inbound mail** (`POST /api/inbound`) uses a shared secret:
-   `Authorization: Bearer <BLINKMAIL_INBOUND_SECRET>`. Only the Cloudflare Email
+   `Authorization: Bearer <INBOUND_SECRET>`. Only the Cloudflare Email
    Worker holds this secret. It is never exposed by `/api/config` or any other
    public route, and the application refuses to start without it.
 
@@ -196,7 +196,7 @@ Receives raw MIME from the Email Worker. **Bearer-authenticated.**
 
 ```http
 POST /api/inbound
-Authorization: Bearer <BLINKMAIL_INBOUND_SECRET>
+Authorization: Bearer <INBOUND_SECRET>
 Content-Type: message/rfc822
 X-Envelope-From: sender@gmail.com
 X-Envelope-To: kopisenja@mail.example.com
@@ -209,7 +209,7 @@ Behaviour:
 - `X-Envelope-From` may be the SMTP null reverse-path `<>` (bounces); the MIME
   `From` header is then used for display, falling back to `unknown`.
 - The recipient's domain must be configured.
-- Raw size is capped at `BLINKMAIL_MAX_INBOUND_BYTES` (default 25 MiB).
+- Raw size is capped at `MAX_INBOUND_BYTES` (default 25 MiB).
 - The inbox is created if missing, and both writes commit in one transaction
   **before** a success is returned.
 - Duplicates are detected by a SHA-256 of envelope-from + envelope-to + raw
@@ -261,7 +261,7 @@ echo "$ADDR"
 
 # 3. Simulate an inbound delivery (normally the Email Worker does this).
 curl -s -X POST $BASE/api/inbound \
-  -H "Authorization: Bearer $BLINKMAIL_INBOUND_SECRET" \
+  -H "Authorization: Bearer $INBOUND_SECRET" \
   -H "Content-Type: message/rfc822" \
   -H "X-Envelope-From: sender@gmail.com" \
   -H "X-Envelope-To: $ADDR" \

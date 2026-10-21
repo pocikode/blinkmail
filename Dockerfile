@@ -39,8 +39,8 @@ USER nonroot
 
 # Persistent data directory; mounted from a named volume in compose.
 WORKDIR /
-ENV BLINKMAIL_LISTEN_ADDR=":8080" \
-    BLINKMAIL_DB_PATH="/data/blinkmail.db"
+ENV LISTEN_ADDR=":8080" \
+    DB_PATH="/data/blinkmail.db"
 
 COPY --from=build /out/blinkmail /usr/local/bin/blinkmail
 

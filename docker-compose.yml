@@ -23,15 +23,15 @@ services:
       - "127.0.0.1:8080:8080"
 
     environment:
-      BLINKMAIL_LISTEN_ADDR: ":8080"
-      BLINKMAIL_DB_PATH: "/data/blinkmail.db"
-      BLINKMAIL_APP_NAME: "${BLINKMAIL_APP_NAME:-Blinkmail}"
-      BLINKMAIL_MAIL_DOMAINS: "${BLINKMAIL_MAIL_DOMAINS:?set BLINKMAIL_MAIL_DOMAINS in .env}"
-      BLINKMAIL_WEB_HOST: "${BLINKMAIL_WEB_HOST:?set BLINKMAIL_WEB_HOST in .env}"
+      LISTEN_ADDR: ":8080"
+      DB_PATH: "/data/blinkmail.db"
+      APP_NAME: "${APP_NAME:-Blinkmail}"
+      MAIL_DOMAINS: "${MAIL_DOMAINS:?set MAIL_DOMAINS in .env}"
+      WEB_HOST: "${WEB_HOST:?set WEB_HOST in .env}"
       # Must match the relay Worker's INBOUND_SECRET.
-      BLINKMAIL_INBOUND_SECRET: "${BLINKMAIL_INBOUND_SECRET:?set BLINKMAIL_INBOUND_SECRET in .env}"
-      BLINKMAIL_MAX_INBOUND_BYTES: "${BLINKMAIL_MAX_INBOUND_BYTES:-26214400}"
-      BLINKMAIL_LOG_LEVEL: "${BLINKMAIL_LOG_LEVEL:-info}"
+      INBOUND_SECRET: "${INBOUND_SECRET:?set INBOUND_SECRET in .env}"
+      MAX_INBOUND_BYTES: "${MAX_INBOUND_BYTES:-26214400}"
+      LOG_LEVEL: "${LOG_LEVEL:-info}"
 
     volumes:
       # Named volume persists the SQLite database across container rebuilds and

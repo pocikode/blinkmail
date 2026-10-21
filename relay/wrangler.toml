@@ -5,7 +5,8 @@
 #
 # OPERATOR STEPS (see README "Cloudflare Email Routing"):
 #   1. Set the shared secret to the SAME value as the application's
-#      BLINKMAIL_INBOUND_SECRET. Store it as a secret, never in this file:
+#      INBOUND_SECRET environment variable. Store it as a secret, never in
+#      this file:
 #        npx wrangler secret put INBOUND_SECRET
 #   2. Set INBOUND_URL below to your public HTTPS endpoint.
 #   3. Deploy:
@@ -30,7 +31,7 @@ action = "process"
 INBOUND_URL = "https://mail.example.com/api/inbound"
 
 # Reject mail larger than this before forwarding. Keep it equal to the
-# application's BLINKMAIL_MAX_INBOUND_BYTES so both sides agree.
+# application's MAX_INBOUND_BYTES so both sides agree.
 MAX_RAW_BYTES = "26214400"
 
 # INBOUND_SECRET is NOT set here on purpose. Put it in a Wrangler secret:

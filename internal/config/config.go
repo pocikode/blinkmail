@@ -66,23 +66,23 @@ func Load() (Config, error) {
 	}
 
 	cfg := Config{
-		ListenAddr:      getEnv("BLINKMAIL_LISTEN_ADDR", DefaultListenAddr),
-		DBPath:          getEnv("BLINKMAIL_DB_PATH", DefaultDBPath),
-		AppName:         getEnv("BLINKMAIL_APP_NAME", DefaultAppName),
-		WebHost:         getEnv("BLINKMAIL_WEB_HOST", DefaultWebHost),
-		InboundSecret:   os.Getenv("BLINKMAIL_INBOUND_SECRET"),
+		ListenAddr:      getEnv("LISTEN_ADDR", DefaultListenAddr),
+		DBPath:          getEnv("DB_PATH", DefaultDBPath),
+		AppName:         getEnv("APP_NAME", DefaultAppName),
+		WebHost:         getEnv("WEB_HOST", DefaultWebHost),
+		InboundSecret:   os.Getenv("INBOUND_SECRET"),
 		MaxInboundBytes: 25 << 20, // 25 MiB
 	}
 
-	if size := os.Getenv("BLINKMAIL_MAX_INBOUND_BYTES"); size != "" {
+	if size := os.Getenv("MAX_INBOUND_BYTES"); size != "" {
 		n, err := parseSize(size)
 		if err != nil {
-			return Config{}, fmt.Errorf("BLINKMAIL_MAX_INBOUND_BYTES: %w", err)
+			return Config{}, fmt.Errorf("MAX_INBOUND_BYTES: %w", err)
 		}
 		cfg.MaxInboundBytes = n
 	}
 
-	domains, err := parseDomains(os.Getenv("BLINKMAIL_MAIL_DOMAINS"))
+	domains, err := parseDomains(os.Getenv("MAIL_DOMAINS"))
 	if err != nil {
 		return Config{}, err
 	}
@@ -97,29 +97,29 @@ func Load() (Config, error) {
 // validate rejects configurations that would be unsafe or unbootable.
 func (c Config) validate() error {
 	if _, _, err := net.SplitHostPort(c.ListenAddr); err != nil {
-		return fmt.Errorf("BLINKMAIL_LISTEN_ADDR %q is not a valid listen address: %w", c.ListenAddr, err)
+		return fmt.Errorf("LISTEN_ADDR %q is not a valid listen address: %w", c.ListenAddr, err)
 	}
 	if c.DBPath == "" {
-		return fmt.Errorf("BLINKMAIL_DB_PATH must not be empty")
+		return fmt.Errorf("DB_PATH must not be empty")
 	}
 	if c.AppName == "" {
-		return fmt.Errorf("BLINKMAIL_APP_NAME must not be empty")
+		return fmt.Errorf("APP_NAME must not be empty")
 	}
 	if c.WebHost == "" {
-		return fmt.Errorf("BLINKMAIL_WEB_HOST must not be empty")
+		return fmt.Errorf("WEB_HOST must not be empty")
 	}
 
 	// A missing or weak ingestion secret would expose a public endpoint that
 	// accepts arbitrary mail. Refuse to start instead.
 	switch {
 	case c.InboundSecret == "":
-		return fmt.Errorf("BLINKMAIL_INBOUND_SECRET must be set: refusing to start an unauthenticated inbound mail endpoint (generate one with: openssl rand -hex 32)")
+		return fmt.Errorf("INBOUND_SECRET must be set: refusing to start an unauthenticated inbound mail endpoint (generate one with: openssl rand -hex 32)")
 	case len(c.InboundSecret) < 32:
-		return fmt.Errorf("BLINKMAIL_INBOUND_SECRET must be at least 32 characters, got %d", len(c.InboundSecret))
+		return fmt.Errorf("INBOUND_SECRET must be at least 32 characters, got %d", len(c.InboundSecret))
 	}
 
 	if c.MaxInboundBytes <= 0 {
-		return fmt.Errorf("BLINKMAIL_MAX_INBOUND_BYTES must be positive, got %d", c.MaxInboundBytes)
+		return fmt.Errorf("MAX_INBOUND_BYTES must be positive, got %d", c.MaxInboundBytes)
 	}
 
 	return nil
@@ -129,7 +129,7 @@ func (c Config) validate() error {
 // drops empties, and rejects duplicates and malformed domains.
 func parseDomains(raw string) ([]string, error) {
 	if strings.TrimSpace(raw) == "" {
-		return nil, fmt.Errorf("BLINKMAIL_MAIL_DOMAINS must list at least one domain, e.g. \"mail.example.com,mail.example.org\"")
+		return nil, fmt.Errorf("MAIL_DOMAINS must list at least one domain, e.g. \"mail.example.com,mail.example.org\"")
 	}
 
 	var domains []string
@@ -140,17 +140,17 @@ func parseDomains(raw string) ([]string, error) {
 			continue
 		}
 		if err := validateDomain(domain); err != nil {
-			return nil, fmt.Errorf("BLINKMAIL_MAIL_DOMAINS: %w", err)
+			return nil, fmt.Errorf("MAIL_DOMAINS: %w", err)
 		}
 		if _, dup := seen[domain]; dup {
-			return nil, fmt.Errorf("BLINKMAIL_MAIL_DOMAINS: duplicate domain %q", domain)
+			return nil, fmt.Errorf("MAIL_DOMAINS: duplicate domain %q", domain)
 		}
 		seen[domain] = struct{}{}
 		domains = append(domains, domain)
 	}
 
 	if len(domains) == 0 {
-		return nil, fmt.Errorf("BLINKMAIL_MAIL_DOMAINS must list at least one non-empty domain")
+		return nil, fmt.Errorf("MAIL_DOMAINS must list at least one non-empty domain")
 	}
 	return domains, nil
 }

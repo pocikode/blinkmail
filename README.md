@@ -88,11 +88,11 @@ cp .env.example .env
 openssl rand -hex 32
 
 # 2. Run against a local database.
-BLINKMAIL_MAIL_DOMAINS="mail.example.com" \
-BLINKMAIL_WEB_HOST="localhost:8080" \
-BLINKMAIL_DB_PATH="./data/blinkmail.db" \
-BLINKMAIL_LISTEN_ADDR=":8080" \
-BLINKMAIL_INBOUND_SECRET="$(openssl rand -hex 32)" \
+MAIL_DOMAINS="mail.example.com" \
+WEB_HOST="localhost:8080" \
+DB_PATH="./data/blinkmail.db" \
+LISTEN_ADDR=":8080" \
+INBOUND_SECRET="$(openssl rand -hex 32)" \
   go run ./cmd/blinkmail
 ```
 
@@ -101,7 +101,7 @@ message:
 
 ```bash
 curl -X POST localhost:8080/api/inbound \
-  -H "Authorization: Bearer $BLINKMAIL_INBOUND_SECRET" \
+  -H "Authorization: Bearer $INBOUND_SECRET" \
   -H "Content-Type: message/rfc822" \
   -H "X-Envelope-From: sender@gmail.com" \
   -H "X-Envelope-To: <the address from the UI>@mail.example.com" \
@@ -157,9 +157,9 @@ docker run -d --name blinkmail \
   --restart unless-stopped \
   -p 127.0.0.1:8080:8080 \
   -v blinkmail-data:/data \
-  -e BLINKMAIL_MAIL_DOMAINS="mail.example.com" \
-  -e BLINKMAIL_WEB_HOST="mail.example.com" \
-  -e BLINKMAIL_INBOUND_SECRET="$(openssl rand -hex 32)" \
+  -e MAIL_DOMAINS="mail.example.com" \
+  -e WEB_HOST="mail.example.com" \
+  -e INBOUND_SECRET="$(openssl rand -hex 32)" \
   blinkmail
 ```
 
@@ -171,14 +171,14 @@ unauthenticated mail-ingestion endpoint.
 
 | Variable | Default | Description |
 | --- | --- | --- |
-| `BLINKMAIL_LISTEN_ADDR` | `:8080` | HTTP listen address |
-| `BLINKMAIL_DB_PATH` | `/data/blinkmail.db` | SQLite file path |
-| `BLINKMAIL_APP_NAME` | `Blinkmail` | Name shown in the UI |
-| `BLINKMAIL_MAIL_DOMAINS` | *(required)* | Comma-separated domains; first is the default |
-| `BLINKMAIL_WEB_HOST` | `localhost:8080` | Public host shown to users |
-| `BLINKMAIL_INBOUND_SECRET` | *(required, ≥32 chars)* | Bearer secret for `/api/inbound` |
-| `BLINKMAIL_MAX_INBOUND_BYTES` | `26214400` (25 MiB) | Raw message size cap |
-| `BLINKMAIL_LOG_LEVEL` | `info` | `debug`, `info`, `warn`, `error` |
+| `LISTEN_ADDR` | `:8080` | HTTP listen address |
+| `DB_PATH` | `/data/blinkmail.db` | SQLite file path |
+| `APP_NAME` | `Blinkmail` | Name shown in the UI |
+| `MAIL_DOMAINS` | *(required)* | Comma-separated domains; first is the default |
+| `WEB_HOST` | `localhost:8080` | Public host shown to users |
+| `INBOUND_SECRET` | *(required, ≥32 chars)* | Bearer secret for `/api/inbound` |
+| `MAX_INBOUND_BYTES` | `26214400` (25 MiB) | Raw message size cap |
+| `LOG_LEVEL` | `info` | `debug`, `info`, `warn`, `error` |
 
 Startup validation rejects: a missing or malformed domain list, duplicate
 domains, an empty database path, a missing inbound secret, and a secret shorter
@@ -196,14 +196,14 @@ routing rules, and Email Routing must be enabled explicitly.
 cd relay
 npm install                                  # devDependencies: wrangler only
 $EDITOR wrangler.toml                        # set INBOUND_URL and MAX_RAW_BYTES
-npx wrangler secret put INBOUND_SECRET       # paste the SAME value as
-                                             # BLINKMAIL_INBOUND_SECRET
+npx wrangler secret put INBOUND_SECRET       # paste the SAME value as the
+                                             # app's INBOUND_SECRET
 npx wrangler deploy
 ```
 
 Set `INBOUND_URL` to your public HTTPS endpoint, e.g.
 `https://mail.example.com/api/inbound`. `MAX_RAW_BYTES` should equal
-`BLINKMAIL_MAX_INBOUND_BYTES` so both sides agree on the cap.
+`MAX_INBOUND_BYTES` so both sides agree on the cap.
 
 Never put `INBOUND_SECRET` in `wrangler.toml` — it would be committed and
 visible in the Cloudflare dashboard config. Use `wrangler secret put`.
@@ -285,7 +285,7 @@ server {
 ```
 
 The `client_max_body_size` (nginx) or equivalent request-size limit (Caddy,
-Traefik) must be at least `BLINKMAIL_MAX_INBOUND_BYTES`, or the proxy rejects
+Traefik) must be at least `MAX_INBOUND_BYTES`, or the proxy rejects
 large messages before the application sees them.
 
 `INBOUND_URL` on the Worker must be the **public HTTPS** URL, since the Worker
@@ -431,15 +431,16 @@ cd relay && node --test
 ## Troubleshooting
 
 **`refusing to start an unauthenticated inbound mail endpoint`**
-`BLINKMAIL_INBOUND_SECRET` is unset or shorter than 32 characters. Generate one
+`INBOUND_SECRET` is unset or shorter than 32 characters. Generate one
 with `openssl rand -hex 32` and set it in `.env`.
 
-**`BLINKMAIL_MAIL_DOMAINS must list at least one domain`**
+**`MAIL_DOMAINS must list at least one domain`**
 Set a comma-separated list of real domains, e.g. `mail.example.com,mail.example.org`.
 
 **Worker returns 401 / messages are rejected permanently with "rejected message (401)"**
-The Worker's `INBOUND_SECRET` does not match the application's
-`BLINKMAIL_INBOUND_SECRET`. Re-run `npx wrangler secret put INBOUND_SECRET`.
+The Worker's `INBOUND_SECRET` binding does not match the application's
+`INBOUND_SECRET` environment variable. Re-run
+`npx wrangler secret put INBOUND_SECRET` with the application's value.
 
 **Worker throws "Relay failed to reach ..."**
 `INBOUND_URL` is wrong, the VPS is down, or TLS is failing. The Worker cannot
@@ -452,7 +453,7 @@ The catch-all routing rule is missing or points at the wrong Worker. Verify with
 `npx wrangler tail blinkmail-relay` while sending a test message.
 
 **Large messages fail with 413**
-Raise `BLINKMAIL_MAX_INBOUND_BYTES` and the Worker's `MAX_RAW_BYTES` together,
+Raise `MAX_INBOUND_BYTES` and the Worker's `MAX_RAW_BYTES` together,
 and raise your reverse proxy's request-size limit to match.
 
 **Messages appear with the wrong timestamp**

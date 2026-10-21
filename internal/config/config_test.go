@@ -25,15 +25,15 @@ func setEnv(t *testing.T, vars map[string]string) {
 func validEnv(t *testing.T) {
 	t.Helper()
 	setEnv(t, map[string]string{
-		"BLINKMAIL_MAIL_DOMAINS":   "mail.example.com,mail.example.org",
-		"BLINKMAIL_INBOUND_SECRET": validSecret,
+		"MAIL_DOMAINS":   "mail.example.com,mail.example.org",
+		"INBOUND_SECRET": validSecret,
 		// Clear anything the outer environment may have set, so defaults apply.
-		"BLINKMAIL_LISTEN_ADDR":       "",
-		"BLINKMAIL_DB_PATH":           "",
-		"BLINKMAIL_APP_NAME":          "",
-		"BLINKMAIL_WEB_HOST":          "",
-		"BLINKMAIL_MAX_INBOUND_BYTES": "",
-		"BLINKMAIL_LOG_LEVEL":         "",
+		"LISTEN_ADDR":       "",
+		"DB_PATH":           "",
+		"APP_NAME":          "",
+		"WEB_HOST":          "",
+		"MAX_INBOUND_BYTES": "",
+		"LOG_LEVEL":         "",
 	})
 }
 
@@ -65,7 +65,7 @@ func TestLoadDefaults(t *testing.T) {
 func TestLoadDomainsAreLowercasedAndTrimmed(t *testing.T) {
 	validEnv(t)
 	setEnv(t, map[string]string{
-		"BLINKMAIL_MAIL_DOMAINS": "  MAIL.Example.COM ,, mail.example.org ",
+		"MAIL_DOMAINS": "  MAIL.Example.COM ,, mail.example.org ",
 	})
 
 	cfg, err := config.Load()
@@ -93,7 +93,7 @@ func TestLoadDomainsAreLowercasedAndTrimmed(t *testing.T) {
 // Confirm both sides are normalised here.
 func TestHasDomainMatchesLowercasedRequest(t *testing.T) {
 	validEnv(t)
-	setEnv(t, map[string]string{"BLINKMAIL_MAIL_DOMAINS": "MAIL.EXAMPLE.COM"})
+	setEnv(t, map[string]string{"MAIL_DOMAINS": "MAIL.EXAMPLE.COM"})
 
 	cfg, err := config.Load()
 	if err != nil {
@@ -117,7 +117,7 @@ func TestLoadMaxInboundBytesFormats(t *testing.T) {
 	for raw, want := range cases {
 		t.Run(raw, func(t *testing.T) {
 			validEnv(t)
-			setEnv(t, map[string]string{"BLINKMAIL_MAX_INBOUND_BYTES": raw})
+			setEnv(t, map[string]string{"MAX_INBOUND_BYTES": raw})
 
 			cfg, err := config.Load()
 			if err != nil {
@@ -139,60 +139,60 @@ func TestLoadRejectsInvalidConfig(t *testing.T) {
 		wantErr string
 	}{
 		"missing domains": {
-			env:     map[string]string{"BLINKMAIL_MAIL_DOMAINS": ""},
-			wantErr: "BLINKMAIL_MAIL_DOMAINS",
+			env:     map[string]string{"MAIL_DOMAINS": ""},
+			wantErr: "MAIL_DOMAINS",
 		},
 		"only separators and spaces": {
-			env:     map[string]string{"BLINKMAIL_MAIL_DOMAINS": " , , "},
-			wantErr: "BLINKMAIL_MAIL_DOMAINS",
+			env:     map[string]string{"MAIL_DOMAINS": " , , "},
+			wantErr: "MAIL_DOMAINS",
 		},
 		"missing secret": {
-			env:     map[string]string{"BLINKMAIL_INBOUND_SECRET": ""},
-			wantErr: "BLINKMAIL_INBOUND_SECRET must be set",
+			env:     map[string]string{"INBOUND_SECRET": ""},
+			wantErr: "INBOUND_SECRET must be set",
 		},
 		"secret too short": {
-			env:     map[string]string{"BLINKMAIL_INBOUND_SECRET": "short"},
+			env:     map[string]string{"INBOUND_SECRET": "short"},
 			wantErr: "at least 32 characters",
 		},
 		"secret exactly 31 chars": {
-			env:     map[string]string{"BLINKMAIL_INBOUND_SECRET": strings.Repeat("a", 31)},
+			env:     map[string]string{"INBOUND_SECRET": strings.Repeat("a", 31)},
 			wantErr: "at least 32 characters",
 		},
 		"domain without dot": {
-			env:     map[string]string{"BLINKMAIL_MAIL_DOMAINS": "localhost"},
+			env:     map[string]string{"MAIL_DOMAINS": "localhost"},
 			wantErr: "must contain at least one dot",
 		},
 		"domain with underscore": {
-			env:     map[string]string{"BLINKMAIL_MAIL_DOMAINS": "mail_example.com"},
+			env:     map[string]string{"MAIL_DOMAINS": "mail_example.com"},
 			wantErr: "invalid character",
 		},
 		"domain with empty label": {
-			env:     map[string]string{"BLINKMAIL_MAIL_DOMAINS": "mail..example.com"},
+			env:     map[string]string{"MAIL_DOMAINS": "mail..example.com"},
 			wantErr: "empty label",
 		},
 		"duplicate domains": {
-			env:     map[string]string{"BLINKMAIL_MAIL_DOMAINS": "a.example.com,a.example.com"},
+			env:     map[string]string{"MAIL_DOMAINS": "a.example.com,a.example.com"},
 			wantErr: "duplicate domain",
 		},
 		"domain too long": {
-			env:     map[string]string{"BLINKMAIL_MAIL_DOMAINS": strings.Repeat("a.", 130) + "com"},
+			env:     map[string]string{"MAIL_DOMAINS": strings.Repeat("a.", 130) + "com"},
 			wantErr: "exceeds 253 characters",
 		},
 		"label too long": {
-			env:     map[string]string{"BLINKMAIL_MAIL_DOMAINS": strings.Repeat("a", 64) + ".com"},
+			env:     map[string]string{"MAIL_DOMAINS": strings.Repeat("a", 64) + ".com"},
 			wantErr: "label longer than 63",
 		},
 		"leading hyphen label": {
-			env:     map[string]string{"BLINKMAIL_MAIL_DOMAINS": "-mail.example.com"},
+			env:     map[string]string{"MAIL_DOMAINS": "-mail.example.com"},
 			wantErr: "starting or ending with a hyphen",
 		},
 		"invalid listen address": {
-			env:     map[string]string{"BLINKMAIL_LISTEN_ADDR": "not-an-address"},
-			wantErr: "BLINKMAIL_LISTEN_ADDR",
+			env:     map[string]string{"LISTEN_ADDR": "not-an-address"},
+			wantErr: "LISTEN_ADDR",
 		},
 		"invalid max inbound bytes": {
-			env:     map[string]string{"BLINKMAIL_MAX_INBOUND_BYTES": "lots"},
-			wantErr: "BLINKMAIL_MAX_INBOUND_BYTES",
+			env:     map[string]string{"MAX_INBOUND_BYTES": "lots"},
+			wantErr: "MAX_INBOUND_BYTES",
 		},
 	}
 
@@ -217,7 +217,7 @@ func TestLoadRejectsInvalidConfig(t *testing.T) {
 // message, since this is the most likely misconfiguration.
 func TestMissingSecretExplainsHowToFix(t *testing.T) {
 	validEnv(t)
-	setEnv(t, map[string]string{"BLINKMAIL_INBOUND_SECRET": ""})
+	setEnv(t, map[string]string{"INBOUND_SECRET": ""})
 
 	_, err := config.Load()
 	if err == nil {
@@ -235,7 +235,7 @@ func TestAcceptsValidListenAddresses(t *testing.T) {
 	for _, addr := range []string{":8080", "127.0.0.1:8080", "0.0.0.0:9000", "[::1]:8080"} {
 		t.Run(addr, func(t *testing.T) {
 			validEnv(t)
-			setEnv(t, map[string]string{"BLINKMAIL_LISTEN_ADDR": addr})
+			setEnv(t, map[string]string{"LISTEN_ADDR": addr})
 
 			cfg, err := config.Load()
 			if err != nil {
