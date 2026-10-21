@@ -7,9 +7,12 @@ package config
 
 import (
 	"fmt"
+	"log"
 	"net"
 	"os"
 	"strings"
+
+	"github.com/joho/godotenv"
 )
 
 // Configuration defaults.
@@ -57,6 +60,11 @@ func (c Config) HasDomain(domain string) bool {
 
 // Load reads configuration from the process environment and validates it.
 func Load() (Config, error) {
+	err := godotenv.Load()
+	if err != nil {
+		log.Println("WARN: failed to load .env file, using system env")
+	}
+
 	cfg := Config{
 		ListenAddr:      getEnv("BLINKMAIL_LISTEN_ADDR", DefaultListenAddr),
 		DBPath:          getEnv("BLINKMAIL_DB_PATH", DefaultDBPath),

@@ -4,6 +4,7 @@ go 1.27.0
 
 require (
 	github.com/emersion/go-message v0.18.2
+	github.com/joho/godotenv v1.5.1
 	modernc.org/sqlite v1.60.1
 )
 
