@@ -40,7 +40,6 @@ func newTestEnv(t *testing.T) testEnv {
 		DBPath:          path,
 		AppName:         "Blinkmail",
 		MailDomains:     []string{"mail.example.com", "mail.example.org"},
-		WebHost:         "mail.example.com",
 		InboundSecret:   "test-secret-value-at-least-32-chars-long",
 		MaxInboundBytes: 1 << 20, // 1 MiB for tests
 	}
@@ -131,7 +130,6 @@ func TestGetConfig(t *testing.T) {
 		AppName     string   `json:"appName"`
 		MailDomain  string   `json:"mailDomain"`
 		MailDomains []string `json:"mailDomains"`
-		WebHost     string   `json:"webHost"`
 	}
 	if err := json.Unmarshal(w.Body.Bytes(), &cfg); err != nil {
 		t.Fatalf("unmarshal: %v", err)
@@ -144,9 +142,6 @@ func TestGetConfig(t *testing.T) {
 	}
 	if len(cfg.MailDomains) != 2 {
 		t.Errorf("mailDomains = %v", cfg.MailDomains)
-	}
-	if cfg.WebHost != "mail.example.com" {
-		t.Errorf("webHost = %q", cfg.WebHost)
 	}
 
 	// The secret must NOT appear anywhere in the response body or headers.
@@ -684,7 +679,6 @@ func testConfig(e testEnv) config.Config {
 		DBPath:          "/unused/in/tests",
 		AppName:         "Blinkmail",
 		MailDomains:     []string{"mail.example.com", "mail.example.org"},
-		WebHost:         "mail.example.com",
 		InboundSecret:   e.secret,
 		MaxInboundBytes: 1 << 20,
 	}

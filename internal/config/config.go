@@ -10,6 +10,7 @@ import (
 	"log"
 	"net"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/joho/godotenv"
@@ -18,23 +19,22 @@ import (
 // Configuration defaults.
 const (
 	DefaultListenAddr = ":8080"
-	DefaultDBPath     = "/data/blinkmail.db"
+	DefaultDataDir    = "/data"
 	DefaultAppName    = "Blinkmail"
-	DefaultWebHost    = "localhost:8080"
 )
 
 // Config holds all validated runtime settings.
 type Config struct {
 	// ListenAddr is the HTTP listen address, e.g. ":8080".
 	ListenAddr string
-	// DBPath is the SQLite database file path.
+	// DataDir is the directory holding persistent data; it must be writable.
+	DataDir string
+	// DBPath is the SQLite database file, always DataDir/db.sql.
 	DBPath string
 	// AppName is the user-visible application name.
 	AppName string
 	// MailDomains lists accepted mail domains; MailDomains[0] is the default.
 	MailDomains []string
-	// WebHost is the public host of the web UI, shown to users.
-	WebHost string
 	// InboundSecret is the shared bearer secret the Email Worker must present
 	// when calling POST /api/inbound.
 	InboundSecret string
@@ -67,9 +67,8 @@ func Load() (Config, error) {
 
 	cfg := Config{
 		ListenAddr:      getEnv("LISTEN_ADDR", DefaultListenAddr),
-		DBPath:          getEnv("DB_PATH", DefaultDBPath),
+		DataDir:         dataDirEnv(),
 		AppName:         getEnv("APP_NAME", DefaultAppName),
-		WebHost:         getEnv("WEB_HOST", DefaultWebHost),
 		InboundSecret:   os.Getenv("INBOUND_SECRET"),
 		MaxInboundBytes: 25 << 20, // 25 MiB
 	}
@@ -91,6 +90,17 @@ func Load() (Config, error) {
 	if err := cfg.validate(); err != nil {
 		return Config{}, err
 	}
+
+	// Resolve to an absolute path now: the process may chdir later.
+	absDir, err := filepath.Abs(cfg.DataDir)
+	if err != nil {
+		return Config{}, fmt.Errorf("DATA_DIR %q: %w", cfg.DataDir, err)
+	}
+	cfg.DataDir = absDir
+	// The database location is derived from DATA_DIR rather than separately
+	// configurable, so persistent storage has a single source of truth.
+	cfg.DBPath = filepath.Join(absDir, "db.sql")
+
 	return cfg, nil
 }
 
@@ -99,14 +109,11 @@ func (c Config) validate() error {
 	if _, _, err := net.SplitHostPort(c.ListenAddr); err != nil {
 		return fmt.Errorf("LISTEN_ADDR %q is not a valid listen address: %w", c.ListenAddr, err)
 	}
-	if c.DBPath == "" {
-		return fmt.Errorf("DB_PATH must not be empty")
+	if strings.TrimSpace(c.DataDir) == "" {
+		return fmt.Errorf("DATA_DIR must not be empty")
 	}
 	if c.AppName == "" {
 		return fmt.Errorf("APP_NAME must not be empty")
-	}
-	if c.WebHost == "" {
-		return fmt.Errorf("WEB_HOST must not be empty")
 	}
 
 	// A missing or weak ingestion secret would expose a public endpoint that
@@ -191,6 +198,16 @@ func getEnv(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+// dataDirEnv returns DATA_DIR, defaulting only when it is unset. A value that is
+// set but blank is passed through so validate rejects it, rather than silently
+// falling back to a default storage location.
+func dataDirEnv() string {
+	if raw, ok := os.LookupEnv("DATA_DIR"); ok {
+		return strings.TrimSpace(raw)
+	}
+	return DefaultDataDir
 }
 
 // parseSize accepts a plain byte count or a value suffixed with KB/MB/GB.

@@ -89,8 +89,7 @@ openssl rand -hex 32
 
 # 2. Run against a local database.
 MAIL_DOMAINS="mail.example.com" \
-WEB_HOST="localhost:8080" \
-DB_PATH="./data/blinkmail.db" \
+DATA_DIR="./data" \
 LISTEN_ADDR=":8080" \
 INBOUND_SECRET="$(openssl rand -hex 32)" \
   go run ./cmd/blinkmail
@@ -158,7 +157,7 @@ docker run -d --name blinkmail \
   -p 127.0.0.1:8080:8080 \
   -v blinkmail-data:/data \
   -e MAIL_DOMAINS="mail.example.com" \
-  -e WEB_HOST="mail.example.com" \
+  -e DATA_DIR="/data" \
   -e INBOUND_SECRET="$(openssl rand -hex 32)" \
   blinkmail
 ```
@@ -172,17 +171,32 @@ unauthenticated mail-ingestion endpoint.
 | Variable | Default | Description |
 | --- | --- | --- |
 | `LISTEN_ADDR` | `:8080` | HTTP listen address |
-| `DB_PATH` | `/data/blinkmail.db` | SQLite file path |
+| `DATA_DIR` | `/data` | Data directory; the database is `$DATA_DIR/db.sql` |
 | `APP_NAME` | `Blinkmail` | Name shown in the UI |
 | `MAIL_DOMAINS` | *(required)* | Comma-separated domains; first is the default |
-| `WEB_HOST` | `localhost:8080` | Public host shown to users |
 | `INBOUND_SECRET` | *(required, ≥32 chars)* | Bearer secret for `/api/inbound` |
 | `MAX_INBOUND_BYTES` | `26214400` (25 MiB) | Raw message size cap |
 | `LOG_LEVEL` | `info` | `debug`, `info`, `warn`, `error` |
 
 Startup validation rejects: a missing or malformed domain list, duplicate
-domains, an empty database path, a missing inbound secret, and a secret shorter
+domains, an empty data directory, a missing inbound secret, and a secret shorter
 than 32 characters.
+
+### Upgrading from an older version
+
+Older versions stored the database at `$DATA_DIR/blinkmail.db` and let you set
+the file path directly. Both are gone: the database is always `$DATA_DIR/db.sql`.
+Before starting the new version, stop the old one and rename the files:
+
+```bash
+docker compose stop blinkmail
+docker run --rm -v blinkmail-data:/data alpine \
+  sh -c 'cd /data &&
+         [ -f blinkmail.db ]     && mv blinkmail.db db.sql;
+         [ -f blinkmail.db-wal ] && mv blinkmail.db-wal db.sql-wal;
+         [ -f blinkmail.db-shm ] && mv blinkmail.db-shm db.sql-shm; true'
+docker compose up -d --build
+```
 
 ## Cloudflare Email Routing (operator steps)
 
@@ -341,7 +355,7 @@ docker compose exec blinkmail /usr/local/bin/blinkmail -healthcheck   # confirm 
 # There is no sqlite3 binary in the distroless image; run it from a helper
 # container against the same volume:
 docker run --rm -v blinkmail-data:/data alpine \
-  sh -c 'apk add --no-cache sqlite >/dev/null && sqlite3 /data/blinkmail.db \
+  sh -c 'apk add --no-cache sqlite >/dev/null && sqlite3 /data/db.sql \
     "PRAGMA foreign_keys=ON;
      DELETE FROM messages WHERE inbox_address = '"'"'spam@mail.example.com'"'"';
      DELETE FROM session_inboxes WHERE inbox_address = '"'"'spam@mail.example.com'"'"';
@@ -382,7 +396,7 @@ Use SQLite's own online backup instead:
 ```bash
 docker run --rm -v blinkmail-data:/data -v "$PWD/backups:/backup" alpine \
   sh -c 'apk add --no-cache sqlite >/dev/null && \
-         sqlite3 /data/blinkmail.db ".backup '"'"'/backup/blinkmail-$(date +%F).db'"'"'"'
+         sqlite3 /data/db.sql ".backup '"'"'/backup/blinkmail-$(date +%F).db'"'"'"'
 ```
 
 `.backup` produces a consistent single-file snapshot and is safe while the
@@ -391,7 +405,7 @@ application runs. Restore by stopping the container and replacing the file:
 ```bash
 docker compose stop blinkmail
 docker run --rm -v blinkmail-data:/data -v "$PWD/backups:/backup" alpine \
-  cp /backup/blinkmail-2026-10-21.db /data/blinkmail.db
+  cp /backup/blinkmail-2026-10-21.db /data/db.sql
 docker compose start blinkmail
 ```
 
@@ -400,7 +414,7 @@ upgraded automatically if it predates the current schema.
 
 ### WAL mode notes
 
-WAL leaves `blinkmail.db-wal` and `blinkmail.db-shm` beside the main file. That
+WAL leaves `db.sql-wal` and `db.sql-shm` beside the main file. That
 is normal. All three files must be backed up together, or use `.backup`, which
 collapses them into one consistent file. Deleting `-wal` while the server is
 running can lose committed data.

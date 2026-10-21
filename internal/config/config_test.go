@@ -1,6 +1,8 @@
 package config_test
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -21,6 +23,25 @@ func setEnv(t *testing.T, vars map[string]string) {
 	}
 }
 
+// unsetEnv removes a variable for the duration of a test. t.Setenv cannot
+// express "unset" (an empty value is still set), yet DATA_DIR deliberately
+// distinguishes the two: unset means "use the default", set-but-blank is an
+// error.
+func unsetEnv(t *testing.T, key string) {
+	t.Helper()
+	prev, had := os.LookupEnv(key)
+	if err := os.Unsetenv(key); err != nil {
+		t.Fatalf("unset %s: %v", key, err)
+	}
+	t.Cleanup(func() {
+		if had {
+			_ = os.Setenv(key, prev)
+			return
+		}
+		_ = os.Unsetenv(key)
+	})
+}
+
 // validEnv returns a baseline environment that Load must accept.
 func validEnv(t *testing.T) {
 	t.Helper()
@@ -29,12 +50,11 @@ func validEnv(t *testing.T) {
 		"INBOUND_SECRET": validSecret,
 		// Clear anything the outer environment may have set, so defaults apply.
 		"LISTEN_ADDR":       "",
-		"DB_PATH":           "",
 		"APP_NAME":          "",
-		"WEB_HOST":          "",
 		"MAX_INBOUND_BYTES": "",
 		"LOG_LEVEL":         "",
 	})
+	unsetEnv(t, "DATA_DIR")
 }
 
 func TestLoadDefaults(t *testing.T) {
@@ -48,17 +68,39 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.ListenAddr != config.DefaultListenAddr {
 		t.Errorf("ListenAddr = %q, want %q", cfg.ListenAddr, config.DefaultListenAddr)
 	}
-	if cfg.DBPath != config.DefaultDBPath {
-		t.Errorf("DBPath = %q, want %q", cfg.DBPath, config.DefaultDBPath)
+	if cfg.DataDir != config.DefaultDataDir {
+		t.Errorf("DataDir = %q, want %q", cfg.DataDir, config.DefaultDataDir)
+	}
+	wantDB := filepath.Join(config.DefaultDataDir, "db.sql")
+	if cfg.DBPath != wantDB {
+		t.Errorf("DBPath = %q, want %q", cfg.DBPath, wantDB)
 	}
 	if cfg.AppName != config.DefaultAppName {
 		t.Errorf("AppName = %q, want %q", cfg.AppName, config.DefaultAppName)
 	}
-	if cfg.WebHost != config.DefaultWebHost {
-		t.Errorf("WebHost = %q, want %q", cfg.WebHost, config.DefaultWebHost)
-	}
 	if cfg.MaxInboundBytes != 25<<20 {
 		t.Errorf("MaxInboundBytes = %d, want %d", cfg.MaxInboundBytes, 25<<20)
+	}
+}
+
+// TestDataDirDerivesAbsoluteDBPath pins the two guarantees operators rely on:
+// the database is always $DATA_DIR/db.sql, and a relative DATA_DIR is resolved
+// against the startup working directory so a later chdir cannot move it.
+func TestDataDirDerivesAbsoluteDBPath(t *testing.T) {
+	validEnv(t)
+	setEnv(t, map[string]string{"DATA_DIR": "./relative-data"})
+
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("Load() = %v", err)
+	}
+
+	if !filepath.IsAbs(cfg.DataDir) {
+		t.Errorf("DataDir = %q, want an absolute path", cfg.DataDir)
+	}
+	wantDB := filepath.Join(cfg.DataDir, "db.sql")
+	if cfg.DBPath != wantDB {
+		t.Errorf("DBPath = %q, want %q", cfg.DBPath, wantDB)
 	}
 }
 
@@ -189,6 +231,10 @@ func TestLoadRejectsInvalidConfig(t *testing.T) {
 		"invalid listen address": {
 			env:     map[string]string{"LISTEN_ADDR": "not-an-address"},
 			wantErr: "LISTEN_ADDR",
+		},
+		"empty data dir": {
+			env:     map[string]string{"DATA_DIR": "  "},
+			wantErr: "DATA_DIR",
 		},
 		"invalid max inbound bytes": {
 			env:     map[string]string{"MAX_INBOUND_BYTES": "lots"},

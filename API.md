@@ -52,8 +52,7 @@ Public application settings. Requires no session.
 {
   "appName": "Blinkmail",
   "mailDomain": "mail.example.com",
-  "mailDomains": ["mail.example.com", "mail.example.org"],
-  "webHost": "mail.example.com"
+  "mailDomains": ["mail.example.com", "mail.example.org"]
 }
 ```
 

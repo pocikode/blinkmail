@@ -139,9 +139,9 @@ func run() error {
 	go func() {
 		logger.Info("starting Blinkmail",
 			"listen", cfg.ListenAddr,
+			"data_dir", cfg.DataDir,
 			"database", cfg.DBPath,
 			"domains", cfg.MailDomains,
-			"web_host", cfg.WebHost,
 		)
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			errCh <- err

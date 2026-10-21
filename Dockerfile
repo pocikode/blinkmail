@@ -37,10 +37,11 @@ FROM gcr.io/distroless/static-debian12:nonroot AS runtime
 # database and WAL files.
 USER nonroot
 
-# Persistent data directory; mounted from a named volume in compose.
+# Persistent data directory; mounted from a named volume in compose. The SQLite
+# file is always created at $DATA_DIR/db.sql.
 WORKDIR /
 ENV LISTEN_ADDR=":8080" \
-    DB_PATH="/data/blinkmail.db"
+    DATA_DIR="/data"
 
 COPY --from=build /out/blinkmail /usr/local/bin/blinkmail
 

@@ -30,7 +30,6 @@ type configResponse struct {
 	AppName     string   `json:"appName"`
 	MailDomain  string   `json:"mailDomain"`
 	MailDomains []string `json:"mailDomains"`
-	WebHost     string   `json:"webHost"`
 }
 
 // sessionResponse preserves the reference JSON shape for GET /api/session.
@@ -58,7 +57,6 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 		AppName:     s.cfg.AppName,
 		MailDomain:  s.cfg.DefaultDomain(),
 		MailDomains: out,
-		WebHost:     s.cfg.WebHost,
 	})
 }
 

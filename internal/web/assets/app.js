@@ -37,7 +37,6 @@ var appConfig = {
   appName: 'Blinkmail',
   mailDomain: 'example.com',
   mailDomains: ['example.com'],
-  webHost: 'localhost:8080',
 };
 
 var sessionId = '';
@@ -224,7 +223,6 @@ async function loadConfig() {
       mailDomains: (payload.mailDomains && payload.mailDomains.length)
         ? payload.mailDomains
         : [payload.mailDomain || appConfig.mailDomain],
-      webHost: payload.webHost || appConfig.webHost,
     };
   }
 

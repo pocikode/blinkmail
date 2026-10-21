@@ -24,10 +24,9 @@ services:
 
     environment:
       LISTEN_ADDR: ":8080"
-      DB_PATH: "/data/blinkmail.db"
+      DATA_DIR: "/data"
       APP_NAME: "${APP_NAME:-Blinkmail}"
       MAIL_DOMAINS: "${MAIL_DOMAINS:?set MAIL_DOMAINS in .env}"
-      WEB_HOST: "${WEB_HOST:?set WEB_HOST in .env}"
       # Must match the relay Worker's INBOUND_SECRET.
       INBOUND_SECRET: "${INBOUND_SECRET:?set INBOUND_SECRET in .env}"
       MAX_INBOUND_BYTES: "${MAX_INBOUND_BYTES:-26214400}"
