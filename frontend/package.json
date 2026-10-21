@@ -1,0 +1,13 @@
+{
+  "name": "blinkmail-frontend-tests",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Frontend safety tests for Blinkmail: proves untrusted mail content is rendered inertly.",
+  "scripts": {
+    "test": "node --test"
+  },
+  "devDependencies": {
+    "linkedom": "^0.18.5"
+  }
+}
