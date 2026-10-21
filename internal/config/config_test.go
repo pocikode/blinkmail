@@ -52,6 +52,7 @@ func validEnv(t *testing.T) {
 		"LISTEN_ADDR":       "",
 		"APP_NAME":          "",
 		"MAX_INBOUND_BYTES": "",
+		"INITIAL_PASSWORD":  "",
 		"LOG_LEVEL":         "",
 	})
 	unsetEnv(t, "DATA_DIR")
@@ -240,6 +241,14 @@ func TestLoadRejectsInvalidConfig(t *testing.T) {
 			env:     map[string]string{"MAX_INBOUND_BYTES": "lots"},
 			wantErr: "MAX_INBOUND_BYTES",
 		},
+		"initial password too short": {
+			env:     map[string]string{"INITIAL_PASSWORD": "short"},
+			wantErr: "INITIAL_PASSWORD",
+		},
+		"initial password one char short": {
+			env:     map[string]string{"INITIAL_PASSWORD": strings.Repeat("a", 7)},
+			wantErr: "INITIAL_PASSWORD",
+		},
 	}
 
 	for name, tc := range cases {
@@ -291,5 +300,30 @@ func TestAcceptsValidListenAddresses(t *testing.T) {
 				t.Errorf("ListenAddr = %q, want %q", cfg.ListenAddr, addr)
 			}
 		})
+	}
+}
+
+// TestInitialPasswordIsOptionalAtLoad pins the division of responsibility:
+// INITIAL_PASSWORD is only a first-start seed, so Load accepts it being unset
+// (main decides whether it is required once it can see the database) and
+// accepts a valid value verbatim.
+func TestInitialPasswordIsOptionalAtLoad(t *testing.T) {
+	validEnv(t)
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("Load without INITIAL_PASSWORD: %v", err)
+	}
+	if cfg.InitialPassword != "" {
+		t.Errorf("InitialPassword = %q, want empty", cfg.InitialPassword)
+	}
+
+	const want = "  spaces are part of the password  "
+	setEnv(t, map[string]string{"INITIAL_PASSWORD": want})
+	cfg, err = config.Load()
+	if err != nil {
+		t.Fatalf("Load with INITIAL_PASSWORD: %v", err)
+	}
+	if cfg.InitialPassword != want {
+		t.Errorf("InitialPassword = %q, want %q (untrimmed)", cfg.InitialPassword, want)
 	}
 }

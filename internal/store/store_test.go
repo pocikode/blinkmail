@@ -43,7 +43,8 @@ func TestMigrationsAreRepeatable(t *testing.T) {
 		}
 	}
 
-	// The four tables from the reference model must all exist exactly once.
+	// Every table from the migrations must exist exactly once: the four from the
+	// reference model plus the two auth tables added by 002_auth.
 	s, err := store.Open(path, store.EmbeddedMigrations())
 	if err != nil {
 		t.Fatalf("final open: %v", err)
@@ -52,6 +53,7 @@ func TestMigrationsAreRepeatable(t *testing.T) {
 
 	want := map[string]bool{
 		"inboxes": true, "messages": true, "sessions": true, "session_inboxes": true,
+		"settings": true, "auth_sessions": true,
 	}
 	rows, err := s.DB().QueryContext(context.Background(),
 		`SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'`)
@@ -78,14 +80,15 @@ func TestMigrationsAreRepeatable(t *testing.T) {
 		}
 	}
 
-	// schema_migrations must have recorded exactly one row per migration file.
+	// schema_migrations must have recorded exactly one row per migration file
+	// (001_init, 002_auth), so a re-run cannot have applied anything twice.
 	var n int
 	if err := s.DB().QueryRowContext(context.Background(),
 		`SELECT COUNT(*) FROM schema_migrations`).Scan(&n); err != nil {
 		t.Fatalf("count migrations: %v", err)
 	}
-	if n != 1 {
-		t.Errorf("schema_migrations rows = %d, want 1", n)
+	if n != 2 {
+		t.Errorf("schema_migrations rows = %d, want 2", n)
 	}
 }
 

@@ -14,11 +14,124 @@
     <link rel="stylesheet" href="/styles.css" />
   </head>
   <body>
-    <div class="app">
+    <!--
+      Login view. Everything else is hidden until /api/auth/status says this
+      browser holds a valid session cookie, so an unauthenticated visitor never
+      sees the app shell and the client never calls the inbox endpoints.
+    -->
+    <main class="login-view" id="loginView" hidden>
+      <form class="login-card" id="loginForm" novalidate>
+        <h1 id="loginTitle">Blinkmail</h1>
+        <p class="login-sub">Sign in to read your disposable inbox.</p>
+
+        <label class="field-label" for="passwordInput">Password</label>
+        <input
+          id="passwordInput"
+          name="password"
+          type="password"
+          autocomplete="current-password"
+          spellcheck="false"
+          aria-describedby="loginError"
+          required
+        />
+
+        <button type="submit" id="loginBtn">Sign in</button>
+
+        <!-- Server text is written with textContent, never as markup. -->
+        <div class="login-error" id="loginError" role="alert" hidden></div>
+      </form>
+    </main>
+
+    <div class="app" id="appView" hidden>
       <header>
-        <h1 id="appTitle">Blinkmail</h1>
+        <div class="header-row">
+          <h1 id="appTitle">Blinkmail</h1>
+          <button
+            type="button"
+            id="settingsBtn"
+            class="ghost-btn"
+            aria-expanded="false"
+            aria-controls="settingsPanel"
+          >
+            ⚙ Settings
+          </button>
+        </div>
         <p id="appSubtitle">Disposable inbox</p>
       </header>
+
+      <!-- Account and security controls. Hidden until opened from the header. -->
+      <section
+        class="settings-panel"
+        id="settingsPanel"
+        aria-labelledby="settingsHeading"
+        hidden
+      >
+        <h2 id="settingsHeading">Settings</h2>
+
+        <div class="settings-group">
+          <h3>Session</h3>
+          <p class="settings-hint">
+            Signing out ends this browser's session. Your inboxes stay on the
+            server and remain readable by anyone who knows their addresses.
+          </p>
+          <button type="button" id="logoutBtn" class="danger">
+            Sign out
+          </button>
+        </div>
+
+        <div class="settings-group">
+          <h3>Change password</h3>
+          <form id="passwordForm" novalidate>
+            <label class="field-label" for="currentPasswordInput"
+              >Current password</label
+            >
+            <input
+              id="currentPasswordInput"
+              type="password"
+              autocomplete="current-password"
+              spellcheck="false"
+              required
+            />
+
+            <label class="field-label" for="newPasswordInput"
+              >New password</label
+            >
+            <input
+              id="newPasswordInput"
+              type="password"
+              autocomplete="new-password"
+              spellcheck="false"
+              aria-describedby="passwordHint"
+              minlength="8"
+              required
+            />
+            <p class="settings-hint" id="passwordHint">
+              At least 8 characters. Changing it signs out every other browser.
+            </p>
+
+            <button type="submit" id="passwordSubmitBtn">
+              Update password
+            </button>
+            <div
+              class="settings-status"
+              id="passwordStatus"
+              role="status"
+              aria-live="polite"
+            ></div>
+          </form>
+        </div>
+
+        <!--
+          Placeholder: T04 adds API keys here. The panel exists now so that work
+          lands as an addition rather than a restructuring of the settings UI.
+        -->
+        <div class="settings-group" id="apiKeysSection">
+          <h3>API keys</h3>
+          <p class="settings-hint" id="apiKeysPlaceholder">
+            API keys for programmatic access will be managed here.
+          </p>
+        </div>
+      </section>
 
       <!-- Every address on this service is public. Say so up front. -->
       <section class="notice" aria-labelledby="noticeHeading">

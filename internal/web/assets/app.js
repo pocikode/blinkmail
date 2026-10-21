@@ -12,8 +12,22 @@
 var SESSION_KEY = 'blinkmail_session_id';
 
 var els = {
+  loginView: document.getElementById('loginView'),
+  loginForm: document.getElementById('loginForm'),
+  passwordInput: document.getElementById('passwordInput'),
+  loginBtn: document.getElementById('loginBtn'),
+  loginError: document.getElementById('loginError'),
+  appView: document.getElementById('appView'),
   appTitle: document.getElementById('appTitle'),
   appSubtitle: document.getElementById('appSubtitle'),
+  settingsBtn: document.getElementById('settingsBtn'),
+  settingsPanel: document.getElementById('settingsPanel'),
+  logoutBtn: document.getElementById('logoutBtn'),
+  passwordForm: document.getElementById('passwordForm'),
+  currentPasswordInput: document.getElementById('currentPasswordInput'),
+  newPasswordInput: document.getElementById('newPasswordInput'),
+  passwordSubmitBtn: document.getElementById('passwordSubmitBtn'),
+  passwordStatus: document.getElementById('passwordStatus'),
   inboxSelect: document.getElementById('inboxSelect'),
   copyBtn: document.getElementById('copyBtn'),
   refreshBtn: document.getElementById('refreshBtn'),
@@ -41,6 +55,11 @@ var appConfig = {
 
 var sessionId = '';
 var busy = false;
+
+// authState mirrors the server's view: true only while a valid login cookie is
+// held. It is set from /api/auth/status and cleared on any 401, so the UI never
+// shows the app on a guess.
+var authState = false;
 
 // ---- Small DOM helpers -----------------------------------------------------
 
@@ -77,6 +96,25 @@ function showError(message) {
 function clearError() {
   els.errorBanner.hidden = true;
   els.errorText.textContent = '';
+}
+
+// showLoginError and clearLoginError drive the login card's own alert area,
+// separate from the app's banner: while logged out the banner is not visible.
+function showLoginError(message) {
+  els.loginError.textContent = message || 'Could not sign in.';
+  els.loginError.hidden = false;
+}
+
+function clearLoginError() {
+  els.loginError.textContent = '';
+  els.loginError.hidden = true;
+}
+
+// showPasswordStatus reports the outcome of a password change next to its form,
+// again via textContent only.
+function showPasswordStatus(message, isError) {
+  els.passwordStatus.textContent = message || '';
+  els.passwordStatus.classList.toggle('is-error', Boolean(isError));
 }
 
 function showToast(text) {
@@ -121,15 +159,24 @@ function ApiError(message, status) {
 
 async function fetchJson(url, options) {
   var opts = options || {};
+  var method = opts.method || 'GET';
   var headers = { Accept: 'application/json' };
-  if (opts.body !== undefined) headers['Content-Type'] = 'application/json';
+  // State-changing requests must declare JSON: the server rejects anything else
+  // with 415, which is what stops a cross-site form from forging a request. The
+  // header is set from the method rather than from the presence of a body, so a
+  // bodyless POST (logout) is still labelled correctly.
+  if (method !== 'GET' && method !== 'HEAD') {
+    headers['Content-Type'] = 'application/json';
+  }
   if (sessionId) headers['x-session-id'] = sessionId;
 
   var res;
   try {
     res = await fetch(url, {
-      method: opts.method || 'GET',
+      method: method,
       headers: headers,
+      // The auth cookie is HttpOnly, so the browser attaches it automatically;
+      // same-origin is the default and sends it.
       body: opts.body === undefined ? undefined : JSON.stringify(opts.body),
     });
   } catch (networkErr) {
@@ -196,19 +243,136 @@ async function ensureSession() {
   saveSessionId(payload.sessionId);
 }
 
-// withFreshSessionOnAuthError retries an operation once after replacing a
-// rejected session token. This is what makes a cleared or rotated database
-// recover without the user having to wipe local storage by hand.
-async function withFreshSessionOnAuthError(operation) {
+// ---- Authentication --------------------------------------------------------
+
+// checkAuth asks the server whether this browser holds a valid login cookie.
+async function checkAuth() {
+  var payload = await fetchJson('/api/auth/status');
+  authState = Boolean(payload && payload.authenticated);
+  return authState;
+}
+
+// showLoginView hides the app and focuses the password field, so keyboard and
+// screen-reader users land where the next action is.
+function showLoginView(message) {
+  authState = false;
+  els.appView.hidden = true;
+  els.settingsPanel.hidden = true;
+  els.settingsBtn.setAttribute('aria-expanded', 'false');
+  els.loginView.hidden = false;
+  els.passwordInput.value = '';
+  clearLoginError();
+  if (message) showLoginError(message);
+  els.passwordInput.focus();
+}
+
+// showAppView swaps the login card for the app shell.
+function showAppView() {
+  authState = true;
+  els.loginView.hidden = true;
+  els.appView.hidden = false;
+  clearLoginError();
+}
+
+// submitLogin posts the password and, on success, loads the app.
+async function submitLogin() {
+  var password = els.passwordInput.value;
+  if (!password) {
+    showLoginError('Enter your password.');
+    els.passwordInput.focus();
+    return;
+  }
+
+  els.loginBtn.disabled = true;
+  clearLoginError();
   try {
-    return await operation();
+    await fetchJson('/api/login', { method: 'POST', body: { password: password } });
+    els.passwordInput.value = '';
+    await startApp();
   } catch (err) {
     if (err && err.status === 401) {
-      forgetSessionId();
-      await ensureSession();
-      return await operation();
+      showLoginError('Invalid password.');
+    } else if (err && err.status === 429) {
+      showLoginError('Too many failed attempts. Wait a few minutes and try again.');
+    } else {
+      showLoginError((err && err.message) || 'Could not sign in.');
     }
-    throw err;
+    els.passwordInput.focus();
+  } finally {
+    els.loginBtn.disabled = false;
+  }
+}
+
+// submitLogout revokes the session server-side, then returns to the login view.
+async function submitLogout() {
+  try {
+    await fetchJson('/api/logout', { method: 'POST' });
+  } catch (err) {
+    // A 401 means the session was already gone, which is the desired end state.
+    if (!err || err.status !== 401) {
+      showError((err && err.message) || 'Could not sign out.');
+      return;
+    }
+  }
+  forgetSessionId();
+  showLoginView('Signed out.');
+  showToast('Signed out');
+}
+
+// submitPasswordChange changes the password. Success keeps this browser signed
+// in; every other browser is revoked by the server.
+async function submitPasswordChange() {
+  var current = els.currentPasswordInput.value;
+  var next = els.newPasswordInput.value;
+
+  if (!current) {
+    showPasswordStatus('Enter your current password.', true);
+    els.currentPasswordInput.focus();
+    return;
+  }
+  if (!next || next.length < 8) {
+    showPasswordStatus('The new password must be at least 8 characters.', true);
+    els.newPasswordInput.focus();
+    return;
+  }
+
+  els.passwordSubmitBtn.disabled = true;
+  showPasswordStatus('', false);
+  try {
+    await fetchJson('/api/password', {
+      method: 'POST',
+      body: { currentPassword: current, newPassword: next },
+    });
+    els.currentPasswordInput.value = '';
+    els.newPasswordInput.value = '';
+    showPasswordStatus('Password updated. Other browsers were signed out.', false);
+    showToast('Password updated');
+  } catch (err) {
+    if (err && err.status === 401 && err.message === 'Authentication required') {
+      // The gate refused the request: the login cookie is gone. A wrong current
+      // password is also a 401, but carries a different message, so it is
+      // handled below as a field error.
+      forgetSessionId();
+      showLoginView('Your session has expired. Please sign in again.');
+      return;
+    }
+    if (err && err.status === 401) {
+      showPasswordStatus('Current password is incorrect.', true);
+    } else {
+      showPasswordStatus((err && err.message) || 'Could not update the password.', true);
+    }
+  } finally {
+    els.passwordSubmitBtn.disabled = false;
+  }
+}
+
+// toggleSettings shows or hides the settings panel.
+function toggleSettings() {
+  var hidden = els.settingsPanel.hidden;
+  els.settingsPanel.hidden = !hidden;
+  els.settingsBtn.setAttribute('aria-expanded', hidden ? 'true' : 'false');
+  if (hidden) {
+    els.currentPasswordInput.focus();
   }
 }
 
@@ -400,9 +564,7 @@ async function deleteInbox() {
   if (!ok) return;
 
   await busyWhile((async function () {
-    await withFreshSessionOnAuthError(async function () {
-      await fetchJson('/api/inboxes/' + encodeURIComponent(address), { method: 'DELETE' });
-    });
+    await fetchJson('/api/inboxes/' + encodeURIComponent(address), { method: 'DELETE' });
     await loadInboxes();
     showToast('Removed ' + address + ' from this browser');
   })());
@@ -414,9 +576,7 @@ async function createInbox(localPart) {
   if (localPart) body.localPart = localPart;
 
   await busyWhile((async function () {
-    var inbox = await withFreshSessionOnAuthError(function () {
-      return fetchJson('/api/inboxes', { method: 'POST', body: body });
-    });
+    var inbox = await fetchJson('/api/inboxes', { method: 'POST', body: body });
     els.localPartInput.value = '';
     await loadInboxes(inbox && inbox.address);
     if (inbox && inbox.address) showToast('Using ' + inbox.address);
@@ -426,6 +586,13 @@ async function createInbox(localPart) {
 // ---- Wiring ----------------------------------------------------------------
 
 function handleError(err, fallback) {
+  // A 401 from the gate means the login cookie is gone; no retry can fix that,
+  // so the only useful response is the login view.
+  if (err && err.status === 401) {
+    forgetSessionId();
+    showLoginView('Your session has expired. Please sign in again.');
+    return;
+  }
   var message = (err && err.message) ? err.message : fallback;
   showError(message);
   // Also log for diagnosis; the banner is the user-facing channel.
@@ -445,6 +612,33 @@ function bind(name, handler) {
 
 function init() {
   sessionId = storedSessionId();
+
+  // Authentication first: the login form and the app shell are wired before any
+  // network call, so the first paint is usable whichever way the boot check goes.
+  els.loginForm.addEventListener('submit', function (event) {
+    event.preventDefault();
+    submitLogin().catch(function (err) {
+      showLoginError((err && err.message) || 'Could not sign in.');
+    });
+  });
+  // Enter submits naturally inside a form; explicit handling covers browsers
+  // that do not, and keeps focus in the field.
+  els.passwordInput.addEventListener('keydown', function (event) {
+    if (event.key !== 'Enter') return;
+    event.preventDefault();
+    submitLogin().catch(function (err) {
+      showLoginError((err && err.message) || 'Could not sign in.');
+    });
+  });
+
+  bind('settingsBtn', async function () { toggleSettings(); });
+  bind('logoutBtn', submitLogout);
+  els.passwordForm.addEventListener('submit', function (event) {
+    event.preventDefault();
+    submitPasswordChange().catch(function (err) {
+      showPasswordStatus((err && err.message) || 'Could not update the password.', true);
+    });
+  });
 
   bind('copyBtn', copyAddress);
   bind('refreshBtn', loadMessages);
@@ -472,20 +666,48 @@ function init() {
       .catch(function (err) { handleError(err, 'Could not create the address.'); });
   });
 
-  start();
+  boot();
 }
 
-async function start() {
+// boot decides which view to show. Nothing app-related is fetched before the
+// server confirms the login cookie, so an unauthenticated visitor never
+// triggers a protected request.
+async function boot() {
+  try {
+    if (await checkAuth()) {
+      await startApp();
+      return;
+    }
+  } catch (err) {
+    // An unreachable server leaves us on the login view with a clear message
+    // rather than a blank page.
+    els.loginView.hidden = false;
+    els.appView.hidden = true;
+    showLoginError((err && err.message) || 'Could not reach the Blinkmail server.');
+    els.passwordInput.focus();
+    return;
+  }
+  showLoginView('');
+}
+
+// startApp loads the application for an authenticated browser. Called after a
+// successful login and on boot when the cookie is already valid.
+async function startApp() {
+  showAppView();
+  clearError();
   els.messageList.setAttribute('aria-busy', 'true');
   try {
     await loadConfig();
-    // A stored token that the server no longer recognises is replaced here
-    // rather than failing the whole page.
+    // The server only resumes inbox tokens it issued; anything else gets a
+    // fresh one.
     await ensureSession();
     await loadInboxes();
     setInboxControlsEnabled(Boolean(els.inboxSelect.value));
   } catch (err) {
     handleError(err, 'Could not load Blinkmail.');
+    // A 401 has already swapped in the login view; there is no app shell left to
+    // fill with an empty state.
+    if (!authState) return;
     showEmptyState('⚠️', 'Connection error',
       'Could not reach the Blinkmail server. Reload the page to try again.');
     els.currentInbox.textContent = 'No inbox selected';

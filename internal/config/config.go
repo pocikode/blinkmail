@@ -14,6 +14,8 @@ import (
 	"strings"
 
 	"github.com/joho/godotenv"
+
+	"pocikode/blinkmail/internal/auth"
 )
 
 // Configuration defaults.
@@ -38,6 +40,10 @@ type Config struct {
 	// InboundSecret is the shared bearer secret the Email Worker must present
 	// when calling POST /api/inbound.
 	InboundSecret string
+	// InitialPassword seeds the admin password on first start only. Once a
+	// password exists in the database this value is ignored; main() decides
+	// whether it is required, because only it can see the database.
+	InitialPassword string
 	// MaxInboundBytes caps the accepted raw MIME message size.
 	MaxInboundBytes int64
 }
@@ -70,6 +76,7 @@ func Load() (Config, error) {
 		DataDir:         dataDirEnv(),
 		AppName:         getEnv("APP_NAME", DefaultAppName),
 		InboundSecret:   os.Getenv("INBOUND_SECRET"),
+		InitialPassword: os.Getenv("INITIAL_PASSWORD"),
 		MaxInboundBytes: 25 << 20, // 25 MiB
 	}
 
@@ -127,6 +134,17 @@ func (c Config) validate() error {
 
 	if c.MaxInboundBytes <= 0 {
 		return fmt.Errorf("MAX_INBOUND_BYTES must be positive, got %d", c.MaxInboundBytes)
+	}
+
+	// INITIAL_PASSWORD is only a seed for the first start, so it is optional
+	// here: whether it is required depends on the database, which main() checks.
+	// When it is set it must satisfy the same policy as a password set in the UI.
+	// The value is not trimmed: leading or trailing spaces are part of the
+	// password a user typed.
+	if c.InitialPassword != "" {
+		if err := auth.ValidatePassword(c.InitialPassword); err != nil {
+			return fmt.Errorf("INITIAL_PASSWORD: %w", err)
+		}
 	}
 
 	return nil

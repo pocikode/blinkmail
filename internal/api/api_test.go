@@ -9,9 +9,11 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"pocikode/blinkmail/internal/api"
+	"pocikode/blinkmail/internal/auth"
 	"pocikode/blinkmail/internal/config"
 	"pocikode/blinkmail/internal/store"
 )
@@ -19,12 +21,29 @@ import (
 // testEnv bundles a Server, its store, and the configured secret for use in a
 // single test.
 type testEnv struct {
-	srv    *api.Server
-	store  *store.Store
-	secret string
+	srv      *api.Server
+	store    *store.Store
+	secret   string
+	password string
+	// cookie is the login cookie obtained in newTestEnv. Most tests exercise
+	// the app as a logged-in browser, so doRequest sends it automatically;
+	// tests that must be unauthenticated use doRequestRaw.
+	cookie *http.Cookie
 }
 
-// newTestEnv builds a server backed by a temporary SQLite file.
+// testPassword is the admin password every test environment is seeded with.
+const testPassword = "correct-horse-battery-staple"
+
+// testPasswordHash caches the seeded hash. Deriving it once keeps the suite
+// quick: each environment still logs in for real (a full PBKDF2 verification),
+// but the seed itself is not re-derived per test.
+var testPasswordHash = sync.OnceValues(func() (string, error) {
+	return auth.Hash(testPassword)
+})
+
+// newTestEnv builds a server backed by a temporary SQLite file, with a known
+// admin password already stored, and logs in once so helpers act as a real
+// authenticated browser.
 func newTestEnv(t *testing.T) testEnv {
 	t.Helper()
 
@@ -34,6 +53,16 @@ func newTestEnv(t *testing.T) testEnv {
 		t.Fatalf("store.Open: %v", err)
 	}
 	t.Cleanup(func() { _ = st.Close() })
+
+	// Seed the password the way main() bootstraps it, so the login path under
+	// test is the real one rather than a test-only shortcut.
+	hash, err := testPasswordHash()
+	if err != nil {
+		t.Fatalf("auth.Hash: %v", err)
+	}
+	if err := st.SetPasswordHash(t.Context(), hash); err != nil {
+		t.Fatalf("SetPasswordHash: %v", err)
+	}
 
 	cfg := config.Config{
 		ListenAddr:      ":8080",
@@ -48,11 +77,43 @@ func newTestEnv(t *testing.T) testEnv {
 	// request by default.
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	srv := api.New(api.Deps{Config: cfg, Store: st, Logger: logger})
-	return testEnv{srv: srv, store: st, secret: cfg.InboundSecret}
+
+	env := testEnv{
+		srv:      srv,
+		store:    st,
+		secret:   cfg.InboundSecret,
+		password: testPassword,
+	}
+	env.cookie = env.login(t, testPassword)
+	return env
 }
 
-// doRequest is a convenience wrapper around http.NewRequest + ServeHTTP.
+// login performs POST /api/login and returns the resulting cookie.
+func (e testEnv) login(t *testing.T, password string) *http.Cookie {
+	t.Helper()
+	w := e.doRequestRaw(http.MethodPost, "/api/login",
+		map[string]string{"password": password},
+		map[string]string{"Content-Type": "application/json"})
+	if w.Code != http.StatusOK {
+		t.Fatalf("login: %d %s", w.Code, w.Body.String())
+	}
+	for _, c := range w.Result().Cookies() {
+		if c.Name == "blinkmail_auth" {
+			return c
+		}
+	}
+	t.Fatal("login returned no blinkmail_auth cookie")
+	return nil
+}
+
+// doRequest is a convenience wrapper around http.NewRequest + ServeHTTP. The
+// request carries the environment's login cookie, like a logged-in browser.
 func (e testEnv) doRequest(method, path string, body interface{}, headers map[string]string) *httptest.ResponseRecorder {
+	return e.doRequestRaw(method, path, body, headers, e.cookie)
+}
+
+// doRequestRaw sends a request carrying only the cookies passed in.
+func (e testEnv) doRequestRaw(method, path string, body interface{}, headers map[string]string, cookies ...*http.Cookie) *httptest.ResponseRecorder {
 	var buf bytes.Buffer
 	if body != nil {
 		if err := json.NewEncoder(&buf).Encode(body); err != nil {
@@ -63,8 +124,30 @@ func (e testEnv) doRequest(method, path string, body interface{}, headers map[st
 	for k, v := range headers {
 		req.Header.Set(k, v)
 	}
+	for _, c := range cookies {
+		if c != nil {
+			req.AddCookie(c)
+		}
+	}
 	w := httptest.NewRecorder()
 	e.srv.ServeHTTP(w, req)
+	return w
+}
+
+// doAuthRequest builds a request with a raw string body, the login cookie, and
+// a JSON content type (unless the caller overrides it). It exists for the tests
+// that need a body the JSON encoder cannot produce, such as malformed JSON.
+func doAuthRequest(srv *api.Server, cookie *http.Cookie, method, path, body string, headers map[string]string) *httptest.ResponseRecorder {
+	req := httptest.NewRequest(method, path, strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	for k, v := range headers {
+		req.Header.Set(k, v)
+	}
+	if cookie != nil {
+		req.AddCookie(cookie)
+	}
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
 	return w
 }
 
@@ -438,11 +521,8 @@ func TestCreateInboxMalformedJSON(t *testing.T) {
 	e := newTestEnv(t)
 	sid := e.getSession(t)
 
-	req := httptest.NewRequest(http.MethodPost, "/api/inboxes", strings.NewReader("{not json"))
-	req.Header.Set("x-session-id", sid)
-	req.Header.Set("Content-Type", "application/json")
-	w := httptest.NewRecorder()
-	e.srv.ServeHTTP(w, req)
+	w := doAuthRequest(e.srv, e.cookie, http.MethodPost, "/api/inboxes", "{not json",
+		map[string]string{"x-session-id": sid})
 
 	if w.Code != http.StatusBadRequest {
 		t.Errorf("status = %d, want 400", w.Code)
@@ -508,9 +588,11 @@ func TestUnlinkPreservesMessages(t *testing.T) {
 		"Authorization": "Bearer " + e.secret,
 	})
 
-	// Unlink it.
+	// Unlink it. State-changing requests must declare a JSON content type, which
+	// is the CSRF defence; the browser client sends it on every non-GET call.
 	w := e.doRequest(http.MethodDelete, "/api/inboxes/"+urlEncode(addr), nil, map[string]string{
 		"x-session-id": sid,
+		"Content-Type": "application/json",
 	})
 	if w.Code != http.StatusOK {
 		t.Fatalf("unlink: %d", w.Code)
@@ -617,10 +699,8 @@ func TestMessagesEmptyAddressPathIsRedirected(t *testing.T) {
 	e := newTestEnv(t)
 	sid := e.getSession(t)
 
-	req := httptest.NewRequest(http.MethodGet, "/api/inboxes//messages", nil)
-	req.Header.Set("x-session-id", sid)
-	w := httptest.NewRecorder()
-	e.srv.ServeHTTP(w, req)
+	w := doAuthRequest(e.srv, e.cookie, http.MethodGet, "/api/inboxes//messages", "",
+		map[string]string{"x-session-id": sid})
 
 	if w.Code != http.StatusMovedPermanently && w.Code != http.StatusTemporaryRedirect {
 		t.Errorf("empty address segment: status = %d, want a 3xx clean-path redirect", w.Code)

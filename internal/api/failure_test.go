@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"pocikode/blinkmail/internal/api"
 	"pocikode/blinkmail/internal/store"
@@ -34,6 +35,11 @@ type failingStore struct {
 	failIsInbox    bool
 	failCount      bool
 	failGetInbox   bool
+	// Authentication paths. These fail closed: the gate must answer 500 rather
+	// than let a request through when it cannot tell whether the caller is
+	// logged in.
+	failAuthSession bool
+	failPassword    bool
 }
 
 func (f *failingStore) SessionExists(ctx context.Context, sid string) (bool, error) {
@@ -109,8 +115,63 @@ func (f *failingStore) CountMessages(ctx context.Context) (int, error) {
 	return f.inner.CountMessages(ctx)
 }
 
+// ---- Authentication ----
+
+func (f *failingStore) SetPasswordHash(ctx context.Context, hash string) error {
+	if f.failPassword {
+		return errStorage
+	}
+	return f.inner.SetPasswordHash(ctx, hash)
+}
+
+func (f *failingStore) PasswordHash(ctx context.Context) (string, error) {
+	if f.failPassword {
+		return "", errStorage
+	}
+	return f.inner.PasswordHash(ctx)
+}
+
+func (f *failingStore) CreateAuthSession(ctx context.Context, id string, expiresAt time.Time) error {
+	if f.failAuthSession {
+		return errStorage
+	}
+	return f.inner.CreateAuthSession(ctx, id, expiresAt)
+}
+
+func (f *failingStore) AuthSessionValid(ctx context.Context, id string) (bool, error) {
+	if f.failAuthSession {
+		return false, errStorage
+	}
+	return f.inner.AuthSessionValid(ctx, id)
+}
+
+func (f *failingStore) DeleteAuthSession(ctx context.Context, id string) error {
+	if f.failAuthSession {
+		return errStorage
+	}
+	return f.inner.DeleteAuthSession(ctx, id)
+}
+
+func (f *failingStore) DeleteOtherAuthSessions(ctx context.Context, keepID string) error {
+	if f.failAuthSession {
+		return errStorage
+	}
+	return f.inner.DeleteOtherAuthSessions(ctx, keepID)
+}
+
+// failingEnv is a server wired to a failingStore, plus the credentials needed
+// to talk to it: the inbound bearer secret and a valid login cookie. The cookie
+// is issued against the same underlying database, so the auth gate accepts it
+// even though the store is wrapped.
+type failingEnv struct {
+	srv    *api.Server
+	store  *failingStore
+	secret string
+	cookie *http.Cookie
+}
+
 // newFailingEnv builds a server whose store can be made to fail on demand.
-func newFailingEnv(t *testing.T, mutate func(*failingStore)) (*api.Server, *failingStore, string) {
+func newFailingEnv(t *testing.T, mutate func(*failingStore)) failingEnv {
 	t.Helper()
 	e := newTestEnv(t)
 	fs := &failingStore{inner: e.store}
@@ -122,7 +183,19 @@ func newFailingEnv(t *testing.T, mutate func(*failingStore)) (*api.Server, *fail
 		Store:  fs,
 		Logger: discardLogger(),
 	})
-	return srv, fs, e.secret
+	return failingEnv{srv: srv, store: fs, secret: e.secret, cookie: e.cookie}
+}
+
+// get issues an authenticated GET against the server.
+func (fe failingEnv) get(path string, headers map[string]string) *httptest.ResponseRecorder {
+	req := httptest.NewRequest(http.MethodGet, path, nil)
+	for k, v := range headers {
+		req.Header.Set(k, v)
+	}
+	req.AddCookie(fe.cookie)
+	w := httptest.NewRecorder()
+	fe.srv.ServeHTTP(w, req)
+	return w
 }
 
 // deliver posts raw MIME to a given server.
@@ -142,11 +215,11 @@ func deliver(srv *api.Server, secret, raw, from, to string) *httptest.ResponseRe
 // The reference implementation logged the failure and returned normally, which
 // made Cloudflare acknowledge a message that was never stored.
 func TestInboundStorageFailureIsNotAcknowledged(t *testing.T) {
-	srv, _, secret := newFailingEnv(t, func(f *failingStore) {
+	env := newFailingEnv(t, func(f *failingStore) {
 		f.failDeliver = true
 	})
 
-	w := deliver(srv, secret, "Subject: Will fail\n\nbody", "from@x.com", "fail@mail.example.com")
+	w := deliver(env.srv, env.secret, "Subject: Will fail\n\nbody", "from@x.com", "fail@mail.example.com")
 
 	if w.Code != http.StatusInternalServerError {
 		t.Errorf("status = %d, want 500 on storage failure", w.Code)
@@ -200,13 +273,11 @@ func TestInboundDuplicateStillSucceeds(t *testing.T) {
 // when it cannot create a session, rather than returning a token that is not
 // actually persisted.
 func TestSessionCreationStorageFailure(t *testing.T) {
-	srv, _, _ := newFailingEnv(t, func(f *failingStore) {
+	env := newFailingEnv(t, func(f *failingStore) {
 		f.failSession = true
 	})
 
-	req := httptest.NewRequest(http.MethodGet, "/api/session", nil)
-	w := httptest.NewRecorder()
-	srv.ServeHTTP(w, req)
+	w := env.get("/api/session", nil)
 
 	if w.Code != http.StatusInternalServerError {
 		t.Errorf("status = %d, want 500", w.Code)
@@ -226,10 +297,8 @@ func TestListInboxesStorageFailure(t *testing.T) {
 	fs := &failingStore{inner: e.store, failListInbox: true}
 	srv := api.New(api.Deps{Config: testConfig(e), Store: fs, Logger: discardLogger()})
 
-	req := httptest.NewRequest(http.MethodGet, "/api/inboxes", nil)
-	req.Header.Set("x-session-id", sid)
-	w := httptest.NewRecorder()
-	srv.ServeHTTP(w, req)
+	w := doAuthRequest(srv, e.cookie, http.MethodGet, "/api/inboxes", "",
+		map[string]string{"x-session-id": sid})
 
 	if w.Code != http.StatusInternalServerError {
 		t.Errorf("status = %d, want 500", w.Code)
@@ -245,10 +314,9 @@ func TestMessagesStorageFailure(t *testing.T) {
 	fs := &failingStore{inner: e.store, failMessages: true}
 	srv := api.New(api.Deps{Config: testConfig(e), Store: fs, Logger: discardLogger()})
 
-	req := httptest.NewRequest(http.MethodGet, "/api/inboxes/"+urlEncode(addr)+"/messages", nil)
-	req.Header.Set("x-session-id", sid)
-	w := httptest.NewRecorder()
-	srv.ServeHTTP(w, req)
+	w := doAuthRequest(srv, e.cookie, http.MethodGet,
+		"/api/inboxes/"+urlEncode(addr)+"/messages", "",
+		map[string]string{"x-session-id": sid})
 
 	if w.Code != http.StatusInternalServerError {
 		t.Errorf("status = %d, want 500", w.Code)
@@ -258,13 +326,11 @@ func TestMessagesStorageFailure(t *testing.T) {
 // TestHealthReportsUnhealthyOnStorageFailure verifies /healthz returns 503 when
 // the database cannot answer, which is what deployment checks rely on.
 func TestHealthReportsUnhealthyOnStorageFailure(t *testing.T) {
-	srv, _, _ := newFailingEnv(t, func(f *failingStore) {
+	env := newFailingEnv(t, func(f *failingStore) {
 		f.failCount = true
 	})
 
-	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
-	w := httptest.NewRecorder()
-	srv.ServeHTTP(w, req)
+	w := env.get("/healthz", nil)
 
 	if w.Code != http.StatusServiceUnavailable {
 		t.Errorf("status = %d, want 503", w.Code)
@@ -289,14 +355,56 @@ func TestCreateInboxLinkFailure(t *testing.T) {
 	fs := &failingStore{inner: e.store, failLink: true}
 	srv := api.New(api.Deps{Config: testConfig(e), Store: fs, Logger: discardLogger()})
 
-	req := httptest.NewRequest(http.MethodPost, "/api/inboxes",
-		strings.NewReader(`{"localPart":"linkfail","domain":"mail.example.com"}`))
-	req.Header.Set("x-session-id", sid)
-	req.Header.Set("Content-Type", "application/json")
-	w := httptest.NewRecorder()
-	srv.ServeHTTP(w, req)
+	w := doAuthRequest(srv, e.cookie, http.MethodPost, "/api/inboxes",
+		`{"localPart":"linkfail","domain":"mail.example.com"}`,
+		map[string]string{"x-session-id": sid})
 
 	if w.Code != http.StatusInternalServerError {
 		t.Errorf("status = %d, want 500", w.Code)
+	}
+}
+
+// TestGateFailsClosedOnStorageError verifies the gate answers 500 rather than
+// letting the request through when it cannot tell whether the caller is logged
+// in. Failing open here would expose the whole API.
+func TestGateFailsClosedOnStorageError(t *testing.T) {
+	env := newFailingEnv(t, func(f *failingStore) {
+		f.failAuthSession = true
+	})
+
+	w := env.get("/api/inboxes", nil)
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500", w.Code)
+	}
+	if strings.Contains(w.Body.String(), "inbox") {
+		t.Errorf("body = %s, must not leak app data when auth cannot be checked", w.Body.String())
+	}
+
+	// /api/auth/status reports the same failure rather than claiming the caller
+	// is anonymous, which would make the UI show a login form it cannot use.
+	w = env.get("/api/auth/status", nil)
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("auth/status: status = %d, want 500", w.Code)
+	}
+}
+
+// TestLoginStorageFailure verifies a login that cannot read the password hash is
+// a 500, not an accepted password.
+func TestLoginStorageFailure(t *testing.T) {
+	env := newFailingEnv(t, func(f *failingStore) {
+		f.failPassword = true
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/api/login",
+		strings.NewReader(`{"password":"anything"}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	env.srv.ServeHTTP(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500", w.Code)
+	}
+	if strings.Contains(w.Body.String(), `"ok":true`) {
+		t.Error("storage failure was reported as a successful login")
 	}
 }

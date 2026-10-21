@@ -67,15 +67,24 @@ type Store interface {
 	Messages(ctx context.Context, address string) ([]store.Message, error)
 	DeliverMessage(ctx context.Context, m store.NewMessage) error
 	CountMessages(ctx context.Context) (int, error)
+
+	// Authentication.
+	SetPasswordHash(ctx context.Context, hash string) error
+	PasswordHash(ctx context.Context) (string, error)
+	CreateAuthSession(ctx context.Context, id string, expiresAt time.Time) error
+	AuthSessionValid(ctx context.Context, id string) (bool, error)
+	DeleteAuthSession(ctx context.Context, id string) error
+	DeleteOtherAuthSessions(ctx context.Context, keepID string) error
 }
 
 // Server wires configuration, storage and routing together.
 type Server struct {
-	cfg   config.Config
-	store Store
-	log   *slog.Logger
-	gen   address.Generator
-	mux   *http.ServeMux
+	cfg          config.Config
+	store        Store
+	log          *slog.Logger
+	gen          address.Generator
+	mux          *http.ServeMux
+	loginLimiter *loginLimiter
 }
 
 // Deps holds the collaborators a Server needs.
@@ -95,11 +104,12 @@ func New(d Deps) *Server {
 	}
 
 	s := &Server{
-		cfg:   d.Config,
-		store: d.Store,
-		log:   log,
-		gen:   address.NewGenerator(),
-		mux:   http.NewServeMux(),
+		cfg:          d.Config,
+		store:        d.Store,
+		log:          log,
+		gen:          address.NewGenerator(),
+		mux:          http.NewServeMux(),
+		loginLimiter: newLoginLimiter(),
 	}
 	s.routes(d.Assets)
 	return s
@@ -109,18 +119,37 @@ func New(d Deps) *Server {
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) { s.mux.ServeHTTP(w, r) }
 
 // routes registers every endpoint.
+//
+// Every /api/ route sits behind the auth gate except the three that must work
+// before a browser has logged in (/api/auth/status, /api/login, /api/config) and
+// /api/inbound, which carries its own bearer secret from the Email Worker and
+// is not a browser credential at all. /healthz stays public so deployment
+// probes do not need credentials.
 func (s *Server) routes(assets http.Handler) {
 	mux := s.mux
 
-	// JSON API.
-	mux.Handle("GET /api/config", s.withTimeout(apiTimeout, s.handleConfig))
-	mux.Handle("GET /api/session", s.withTimeout(apiTimeout, s.handleSession))
-	mux.Handle("GET /api/inboxes", s.withTimeout(apiTimeout, s.handleListInboxes))
-	mux.Handle("POST /api/inboxes", s.withTimeout(apiTimeout, s.handleCreateInbox))
-	mux.Handle("DELETE /api/inboxes/{address}", s.withTimeout(apiTimeout, s.handleDeleteInbox))
-	mux.Handle("GET /api/inboxes/{address}/messages", s.withTimeout(apiTimeout, s.handleMessages))
+	// Authentication. These decide whether the app is shown, so they cannot
+	// themselves require a session.
+	mux.Handle("GET /api/auth/status", s.withTimeout(apiTimeout, s.handleAuthStatus))
+	mux.Handle("POST /api/login", s.withTimeout(apiTimeout, s.handleLogin))
 
-	// Authenticated inbound mail from the Email Worker.
+	// Public settings.
+	mux.Handle("GET /api/config", s.withTimeout(apiTimeout, s.handleConfig))
+
+	// Authenticated: a valid login cookie is required for everything below.
+	mux.Handle("POST /api/logout", s.protected(apiTimeout, s.handleLogout))
+	mux.Handle("POST /api/password", s.protected(apiTimeout, s.handlePassword))
+
+	// JSON API.
+	mux.Handle("GET /api/session", s.protected(apiTimeout, s.handleSession))
+	mux.Handle("GET /api/inboxes", s.protected(apiTimeout, s.handleListInboxes))
+	mux.Handle("POST /api/inboxes", s.protected(apiTimeout, s.handleCreateInbox))
+	mux.Handle("DELETE /api/inboxes/{address}", s.protected(apiTimeout, s.handleDeleteInbox))
+	mux.Handle("GET /api/inboxes/{address}/messages", s.protected(apiTimeout, s.handleMessages))
+
+	// Authenticated inbound mail from the Email Worker. It has its own bearer
+	// secret and is deliberately outside the cookie gate: the relay is not a
+	// browser and never holds a login session.
 	mux.Handle("POST /api/inbound", s.withTimeout(inboundTimeout, s.handleInbound))
 
 	// Deployment health check.
@@ -132,6 +161,13 @@ func (s *Server) routes(assets http.Handler) {
 	} else {
 		mux.Handle("/", http.NotFoundHandler())
 	}
+}
+
+// protected wraps a handler with the authentication gate and the per-request
+// deadline. Order matters: the timeout wrapper is outside, so a panic inside
+// the gate is recovered and logged like any other handler failure.
+func (s *Server) protected(d time.Duration, next http.HandlerFunc) http.Handler {
+	return s.withTimeout(d, s.requireAuth(next))
 }
 
 // withTimeout binds a per-request deadline and recovers from panics so one bad

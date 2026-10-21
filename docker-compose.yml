@@ -1,11 +1,17 @@
 # Blinkmail — single-service Compose deployment.
 #
-# Copy .env.example to .env, fill in your domains and a strong secret, then:
+# Copy .env.example to .env, fill in your domains, a strong inbound secret and an
+# initial web UI password, then:
 #   docker compose up -d --build
 #
 # The application listens on :8080 inside the container. The published port is
 # bound to localhost by default: put a TLS-terminating reverse proxy in front of
 # it rather than exposing 8080 to the internet directly. See README "HTTPS".
+#
+# INITIAL_PASSWORD only seeds the admin password on the first start. Once a
+# password exists in the database the variable is ignored, so it is safe (and
+# tidy) to remove it from .env afterwards; the password is then changed from the
+# UI under Settings. The app refuses to start on a fresh database without it.
 
 services:
   blinkmail:
@@ -27,6 +33,11 @@ services:
       DATA_DIR: "/data"
       APP_NAME: "${APP_NAME:-Blinkmail}"
       MAIL_DOMAINS: "${MAIL_DOMAINS:?set MAIL_DOMAINS in .env}"
+      # Seeds the web UI admin password on the FIRST start only. Once a password
+      # exists in the database this value is ignored, so it is optional here:
+      # the app itself refuses to start only when the database has no password
+      # yet. Change the password from the UI afterwards (Settings).
+      INITIAL_PASSWORD: "${INITIAL_PASSWORD:-}"
       # Must match the relay Worker's INBOUND_SECRET.
       INBOUND_SECRET: "${INBOUND_SECRET:?set INBOUND_SECRET in .env}"
       MAX_INBOUND_BYTES: "${MAX_INBOUND_BYTES:-26214400}"

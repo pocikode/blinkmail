@@ -68,7 +68,8 @@ internal/config/        Environment configuration and startup validation
 internal/store/         SQLite persistence: migrations, queries, dedupe, transactions
 internal/mail/          MIME parsing via go-message (charset, multipart, encodings)
 internal/address/       Address validation and crypto/rand random generation
-internal/api/           HTTP handlers, routing, sessions, inbound, health
+internal/auth/          PBKDF2 password hashing and policy (standard library only)
+internal/api/           HTTP handlers, routing, login gate, sessions, inbound, health
 internal/web/           Embedded frontend assets and their handler
 relay/                  Cloudflare Email Worker (worker.js, wrangler.toml, tests)
 internal/store/migrations/  Embedded SQL migrations applied at startup
@@ -87,16 +88,18 @@ cp .env.example .env
 # Generate a real secret even locally — startup refuses a weak one:
 openssl rand -hex 32
 
-# 2. Run against a local database.
+# 2. Run against a local database. INITIAL_PASSWORD is required on the first
+#    start only: it seeds the admin password.
 MAIL_DOMAINS="mail.example.com" \
 DATA_DIR="./data" \
 LISTEN_ADDR=":8080" \
 INBOUND_SECRET="$(openssl rand -hex 32)" \
+INITIAL_PASSWORD="a-strong-password" \
   go run ./cmd/blinkmail
 ```
 
-Open <http://localhost:8080>, click **New → Random**, then deliver a test
-message:
+Open <http://localhost:8080>, sign in with `INITIAL_PASSWORD`, click
+**New → Random**, then deliver a test message:
 
 ```bash
 curl -X POST localhost:8080/api/inbound \
@@ -115,7 +118,7 @@ Click **Refresh** in the UI and the message appears.
 
 ```bash
 cp .env.example .env
-$EDITOR .env            # set real domains, web host, and a strong secret
+$EDITOR .env            # set real domains, a strong secret, an initial password
 docker compose up -d --build
 docker compose logs -f blinkmail
 ```
@@ -159,6 +162,7 @@ docker run -d --name blinkmail \
   -e MAIL_DOMAINS="mail.example.com" \
   -e DATA_DIR="/data" \
   -e INBOUND_SECRET="$(openssl rand -hex 32)" \
+  -e INITIAL_PASSWORD="a-strong-password" \
   blinkmail
 ```
 
@@ -175,12 +179,57 @@ unauthenticated mail-ingestion endpoint.
 | `APP_NAME` | `Blinkmail` | Name shown in the UI |
 | `MAIL_DOMAINS` | *(required)* | Comma-separated domains; first is the default |
 | `INBOUND_SECRET` | *(required, ≥32 chars)* | Bearer secret for `/api/inbound` |
+| `INITIAL_PASSWORD` | *(required on first start, ≥8 chars)* | Seeds the web UI admin password **once**; ignored afterwards |
 | `MAX_INBOUND_BYTES` | `26214400` (25 MiB) | Raw message size cap |
 | `LOG_LEVEL` | `info` | `debug`, `info`, `warn`, `error` |
 
 Startup validation rejects: a missing or malformed domain list, duplicate
-domains, an empty data directory, a missing inbound secret, and a secret shorter
-than 32 characters.
+domains, an empty data directory, a missing inbound secret, a secret shorter
+than 32 characters, and an `INITIAL_PASSWORD` shorter than 8 characters when it
+is set.
+
+### Web UI login
+
+The UI is behind a password. There is **one admin account and no username**:
+the password is the whole credential.
+
+`INITIAL_PASSWORD` seeds that password **once**, on the first start, when the
+database holds no password yet:
+
+- Fresh database + `INITIAL_PASSWORD` set → the password is hashed and stored,
+  and the log says `admin password initialised from INITIAL_PASSWORD`.
+- Fresh database + `INITIAL_PASSWORD` empty → startup fails with
+  `INITIAL_PASSWORD must be set on first start: it seeds the admin password`.
+- Password already stored → `INITIAL_PASSWORD` is **ignored** (debug log).
+  Changing the env var later does *not* reset the password.
+
+To change it after that, use **Settings → Change password** in the UI. It asks
+for the current password, requires at least 8 characters for the new one, and
+signs out every *other* browser while keeping yours signed in.
+
+Details worth knowing:
+
+- The password is stored only as a PBKDF2-HMAC-SHA256 hash (32-byte random salt,
+  600 000 iterations, 32-byte key), verified in constant time. It is never
+  logged and never returned by any route.
+- The login cookie is `blinkmail_auth`: `HttpOnly`, `SameSite=Lax`, `Path=/`,
+  `Secure` when the request is TLS, 30-day expiry. The session row can be
+  revoked server-side, which is what logout and password change do.
+- State-changing requests must send `Content-Type: application/json` or they are
+  rejected with `415`. Together with `SameSite=Lax` that is the CSRF defence.
+- Failed logins are limited to 5 per client IP per 15 minutes, then `429`. The
+  counter is in memory and resets on restart, and behind a reverse proxy all
+  clients share the proxy's address.
+- The per-browser `x-session-id` inbox model is unchanged: it sits *behind* the
+  login gate and still decides which addresses a browser lists.
+
+See [API.md](API.md#web-ui-login) for the endpoints and the cookie attributes.
+
+> **Reverse proxies and the `Secure` flag.** The cookie is marked `Secure` only
+> when the request reaching the app is TLS. If your proxy terminates TLS and
+> forwards plain HTTP to `127.0.0.1:8080`, the cookie will lack `Secure` — it
+> still never leaves the loopback hop, but if you want the flag, forward the
+> original scheme or terminate TLS on the app itself.
 
 ### Upgrading from an older version
 
@@ -423,6 +472,12 @@ running can lose committed data.
 
 - The inbound secret is compared in constant time and is never returned by any
   public route or written to logs.
+- The admin password is stored as a salted PBKDF2-HMAC-SHA256 hash (600 000
+  iterations) and compared in constant time. Plaintext passwords, hashes and
+  cookie values are never logged.
+- The login cookie is `HttpOnly` (unreadable from JavaScript) and `SameSite=Lax`,
+  and state-changing requests must be `application/json`, so a cross-site form
+  cannot forge an action.
 - Session tokens come from `crypto/rand` and are validated against the database;
   a client cannot register an arbitrary token, and random addresses are generated
   from secure randomness so they cannot be guessed or enumerated.
@@ -447,6 +502,25 @@ cd relay && node --test
 **`refusing to start an unauthenticated inbound mail endpoint`**
 `INBOUND_SECRET` is unset or shorter than 32 characters. Generate one
 with `openssl rand -hex 32` and set it in `.env`.
+
+**`INITIAL_PASSWORD must be set on first start: it seeds the admin password`**
+The database has no password yet and the variable is empty. Set
+`INITIAL_PASSWORD` (at least 8 characters) in `.env` and start again. This only
+happens on a fresh database; once a password exists the variable is ignored.
+
+**Forgot the admin password**
+There is no reset command. Either restore a database backup that predates the
+change, or delete the stored hash and restart with a new `INITIAL_PASSWORD` (the
+app then treats it as a first start and seeds the new value):
+
+```bash
+docker compose stop blinkmail
+docker run --rm -v blinkmail-data:/data alpine \
+  sh -c 'apk add --no-cache sqlite >/dev/null &&
+         sqlite3 /data/db.sql "DELETE FROM settings WHERE key = \"admin_password\";"'
+# set INITIAL_PASSWORD in .env, then:
+docker compose up -d
+```
 
 **`MAIL_DOMAINS must list at least one domain`**
 Set a comma-separated list of real domains, e.g. `mail.example.com,mail.example.org`.

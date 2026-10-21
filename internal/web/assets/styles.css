@@ -58,6 +58,13 @@ body {
   padding: 40px 20px 80px;
 }
 
+/* The app shell and the login card are mutually exclusive: the client toggles
+   the hidden attribute, so the rules below must not be overridden by a display
+   value elsewhere in this file. */
+.app[hidden] {
+  display: none;
+}
+
 /* ---------------------------------- Header ---------------------------------- */
 header {
   text-align: center;
@@ -605,4 +612,297 @@ a:focus-visible {
 
 .message-list[aria-busy="true"] {
   opacity: 0.6;
+}
+
+/* ==========================================================================
+   Authentication
+   ========================================================================== */
+
+/* ---------------------------------- Login view ------------------------------ */
+/* The login card is the whole page while signed out: the app shell stays
+   [hidden], so there is no half-rendered inbox behind the form. */
+.login-view {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px 16px;
+}
+
+.login-view[hidden] {
+  display: none;
+}
+
+.login-card {
+  width: 100%;
+  max-width: 380px;
+  padding: 32px 28px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-lg);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.login-card h1 {
+  font-size: 28px;
+  font-weight: 700;
+  letter-spacing: -0.5px;
+  background: linear-gradient(135deg, #e0e7ff 0%, #818cf8 50%, #6366f1 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+  text-align: center;
+  margin-bottom: 2px;
+}
+
+.login-card .login-sub {
+  font-size: 13px;
+  color: var(--text-muted);
+  text-align: center;
+  margin-bottom: 16px;
+}
+
+.login-card .field-label {
+  margin-top: 4px;
+}
+
+.login-card input {
+  padding: 12px 16px;
+  background: var(--bg-root);
+  color: var(--text-primary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  font-size: 14px;
+  font-family: inherit;
+  transition: all var(--transition);
+}
+
+.login-card input:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-glow);
+}
+
+.login-card button[type='submit'] {
+  margin-top: 12px;
+  padding: 12px 20px;
+  background: var(--accent);
+  color: #fff;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  font-size: 14px;
+  font-weight: 600;
+  font-family: inherit;
+  cursor: pointer;
+  transition: all var(--transition);
+}
+
+.login-card button[type='submit']:hover {
+  background: var(--accent-soft);
+  box-shadow: 0 0 20px var(--accent-glow);
+}
+
+.login-card button[type='submit']:active {
+  transform: scale(0.98);
+}
+
+.login-card button[type='submit'][disabled] {
+  opacity: 0.55;
+  cursor: progress;
+}
+
+/* The login error area is always present in the DOM so role="alert" announces
+   the first message, rather than the node appearing already populated. */
+.login-error {
+  margin-top: 12px;
+  padding: 10px 12px;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--red);
+  background: var(--red-bg);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--red);
+  border-radius: var(--radius-sm);
+}
+
+.login-error[hidden] {
+  display: none;
+}
+
+/* ---------------------------------- Settings -------------------------------- */
+.header-row {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  position: relative;
+}
+
+.header-row .ghost-btn {
+  position: absolute;
+  right: 0;
+  top: 4px;
+  padding: 6px 12px;
+  background: var(--bg-surface);
+  color: var(--text-secondary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+  font-weight: 600;
+  font-family: inherit;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all var(--transition);
+}
+
+.header-row .ghost-btn:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+  border-color: var(--border-accent);
+}
+
+.settings-panel {
+  margin: 0 0 20px;
+  padding: 20px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-sm);
+  animation: slideDown 200ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.settings-panel[hidden] {
+  display: none;
+}
+
+.settings-panel h2 {
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: -0.2px;
+  margin-bottom: 16px;
+}
+
+.settings-group {
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+}
+
+.settings-group:first-of-type {
+  padding-top: 0;
+  border-top: none;
+}
+
+.settings-group + .settings-group {
+  margin-top: 16px;
+}
+
+.settings-group h3 {
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+  margin-bottom: 8px;
+}
+
+.settings-hint {
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--text-muted);
+  margin-bottom: 10px;
+  max-width: 460px;
+}
+
+.settings-group form {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-width: 340px;
+}
+
+.settings-group form .field-label {
+  margin-top: 6px;
+}
+
+.settings-group input {
+  padding: 10px 14px;
+  background: var(--bg-root);
+  color: var(--text-primary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+  font-family: inherit;
+  transition: all var(--transition);
+}
+
+.settings-group input:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-glow);
+}
+
+.settings-group button[type='submit'] {
+  margin-top: 8px;
+  padding: 10px 16px;
+  background: var(--accent);
+  color: #fff;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+  font-weight: 600;
+  font-family: inherit;
+  cursor: pointer;
+  transition: all var(--transition);
+  align-self: flex-start;
+}
+
+.settings-group button[type='submit']:hover {
+  background: var(--accent-soft);
+}
+
+.settings-group button[type='submit'][disabled] {
+  opacity: 0.55;
+  cursor: progress;
+}
+
+.settings-group button.danger {
+  padding: 10px 16px;
+  color: var(--red);
+  background: var(--red-bg);
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+  font-weight: 600;
+  font-family: inherit;
+  cursor: pointer;
+  transition: all var(--transition);
+}
+
+.settings-group button.danger:hover {
+  background: var(--red);
+  color: #fff;
+}
+
+.settings-status {
+  min-height: 18px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--green);
+}
+
+.settings-status.is-error {
+  color: var(--red);
+}
+
+@media (max-width: 560px) {
+  .header-row .ghost-btn {
+    position: static;
+  }
+
+  .login-card {
+    padding: 24px 20px;
+  }
 }

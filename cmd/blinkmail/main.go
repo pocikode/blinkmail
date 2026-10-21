@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"pocikode/blinkmail/internal/api"
+	"pocikode/blinkmail/internal/auth"
 	"pocikode/blinkmail/internal/config"
 	"pocikode/blinkmail/internal/store"
 	"pocikode/blinkmail/internal/web"
@@ -108,6 +109,16 @@ func run() error {
 	}
 	defer db.Close()
 
+	if err := bootstrapPassword(context.Background(), db, cfg, logger); err != nil {
+		return err
+	}
+
+	// Expired login sessions are dead weight; sweep them once at startup rather
+	// than on every request. A failure here is not worth refusing to boot for.
+	if err := db.DeleteExpiredAuthSessions(context.Background()); err != nil {
+		logger.Warn("could not delete expired auth sessions", "error", err)
+	}
+
 	assets, err := web.Handler()
 	if err != nil {
 		return fmt.Errorf("load frontend assets: %w", err)
@@ -169,6 +180,39 @@ func run() error {
 		_ = srv.Close()
 	}
 	logger.Info("shutdown complete")
+	return nil
+}
+
+// bootstrapPassword seeds the admin password on the very first start.
+//
+// INITIAL_PASSWORD is a one-time seed, not configuration: once a hash exists in
+// the database the environment is ignored, so rotating the env var on a running
+// deployment cannot silently reset the password. Changes are made from the UI
+// instead. The password itself is never logged.
+func bootstrapPassword(ctx context.Context, db *store.Store, cfg config.Config, logger *slog.Logger) error {
+	_, err := db.PasswordHash(ctx)
+	switch {
+	case err == nil:
+		if cfg.InitialPassword != "" {
+			logger.Debug("INITIAL_PASSWORD ignored: admin password already set")
+		}
+		return nil
+	case !errors.Is(err, store.ErrNotFound):
+		return fmt.Errorf("read admin password: %w", err)
+	}
+
+	if cfg.InitialPassword == "" {
+		return errors.New("INITIAL_PASSWORD must be set on first start: it seeds the admin password")
+	}
+
+	hash, err := auth.Hash(cfg.InitialPassword)
+	if err != nil {
+		return fmt.Errorf("hash INITIAL_PASSWORD: %w", err)
+	}
+	if err := db.SetPasswordHash(ctx, hash); err != nil {
+		return fmt.Errorf("store admin password: %w", err)
+	}
+	logger.Info("admin password initialised from INITIAL_PASSWORD")
 	return nil
 }
 
