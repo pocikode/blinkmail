@@ -45,8 +45,7 @@ type createInboxRequest struct {
 
 // handleConfig serves public application settings.
 //
-// The inbound secret is never included: this route is unauthenticated and
-// public.
+// No credential material is included: this route is unauthenticated and public.
 func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 	domains := s.cfg.MailDomains
 	// Copy so a caller cannot mutate the configured slice through the response.
@@ -69,6 +68,18 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 // another browser later receives.
 func (s *Server) handleSession(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
+
+	// An API-key caller already has a stable session; handing it back keeps a
+	// client that does call this endpoint consistent with its other requests.
+	if p, ok := principalFrom(r); ok && p.method == authAPIKey {
+		if err := s.store.CreateSession(ctx, p.sessionID); err != nil {
+			s.log.Error("session creation failed", "error", err)
+			writeError(w, http.StatusInternalServerError, "Could not create session")
+			return
+		}
+		writeJSON(w, http.StatusOK, sessionResponse{SessionID: p.sessionID})
+		return
+	}
 
 	if supplied, err := sessionFromRequest(r); err == nil && supplied != "" {
 		exists, err := s.store.SessionExists(ctx, supplied)

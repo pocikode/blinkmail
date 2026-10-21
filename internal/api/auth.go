@@ -2,11 +2,15 @@ package api
 
 import (
 	"context"
+	"crypto/sha256"
+	"crypto/subtle"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"mime"
 	"net"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -39,13 +43,35 @@ const (
 	loginMaxEntries = 10_000
 )
 
-// principal is the authenticated caller. Today the only credential is the
-// session cookie, so its ID is all there is; T04 extends this with API-key
-// callers, which is why the gate hands handlers a principal rather than a bare
-// bool.
+// authMethod identifies how a caller proved who they are.
+//
+// Handlers need this: management routes must refuse an API key (otherwise a
+// leaked key could mint more keys and escalate), while the inbox routes must
+// know whether to derive a session from the key or from x-session-id.
+type authMethod int
+
+const (
+	// authNone is the zero value and never reaches a handler.
+	authNone authMethod = iota
+	// authCookie is a browser with a valid blinkmail_auth login cookie.
+	authCookie
+	// authAPIKey is a caller presenting Authorization: Bearer bm_...
+	authAPIKey
+)
+
+// principal is the authenticated caller.
+//
+// sessionID is the browser login session for cookie callers. For API-key
+// callers it is the synthetic, stable inbox session derived from the key
+// (apiKeySessionID), so an API client never has to juggle x-session-id.
 type principal struct {
+	method    authMethod
 	sessionID string
 }
+
+// allowsManagement reports whether this caller may manage API keys. Only a
+// browser login counts: a key must not be able to mint or revoke keys.
+func (p principal) allowsManagement() bool { return p.method == authCookie }
 
 type principalKey struct{}
 
@@ -64,11 +90,54 @@ func principalFrom(r *http.Request) (principal, bool) {
 
 // authenticate resolves the caller's credential into a principal.
 //
-// This is the single place the gate consults credentials. T04 slots the API-key
-// check in here: try the Authorization header, return a principal for a valid
-// key, and only then fall back to the cookie. Handlers never need to know how
-// the caller authenticated.
+// A Bearer token is an explicit API-key credential and is judged on its own: if
+// it is bad the request is unauthenticated rather than quietly falling back to a
+// cookie, so a caller can never think it is using a key when it is not. Anything
+// else (no Authorization header, or a non-Bearer scheme a proxy added) falls
+// back to the login cookie, which is what keeps "cookie or key" a true OR.
 func (s *Server) authenticate(r *http.Request) (principal, bool, error) {
+	if h := r.Header.Get("Authorization"); strings.HasPrefix(h, "Bearer ") {
+		return s.authenticateAPIKey(r, h)
+	}
+	return s.authenticateCookie(r)
+}
+
+// authenticateAPIKey validates Authorization: Bearer bm_....
+//
+// The key is hashed and looked up by its unique hash, then compared in constant
+// time. A 256-bit random key needs no KDF: there is no low-entropy secret to
+// stretch, and the hash exists only to keep the plaintext out of the database.
+func (s *Server) authenticateAPIKey(r *http.Request, header string) (principal, bool, error) {
+	key := strings.TrimSpace(strings.TrimPrefix(header, "Bearer "))
+	if !validAPIKey(key) {
+		return principal{}, false, nil
+	}
+
+	sum := sha256.Sum256([]byte(key))
+	hash := hex.EncodeToString(sum[:])
+
+	stored, err := s.store.APIKeyByHash(r.Context(), hash)
+	switch {
+	case errors.Is(err, store.ErrNotFound):
+		return principal{}, false, nil
+	case err != nil:
+		return principal{}, false, fmt.Errorf("look up API key: %w", err)
+	}
+	if subtle.ConstantTimeCompare([]byte(hash), []byte(stored.Hash)) != 1 {
+		return principal{}, false, nil
+	}
+
+	// Best effort: a stale "last used" timestamp is not worth failing a
+	// delivery over, but it is worth knowing about.
+	if err := s.store.TouchAPIKey(r.Context(), stored.ID); err != nil {
+		s.log.Debug("could not update API key last_used_at", "key_id", stored.ID, "error", err)
+	}
+
+	return principal{method: authAPIKey, sessionID: apiKeySessionID(stored.ID)}, true, nil
+}
+
+// authenticateCookie validates the browser login cookie.
+func (s *Server) authenticateCookie(r *http.Request) (principal, bool, error) {
 	cookie, err := r.Cookie(authCookieName)
 	if err != nil || cookie.Value == "" {
 		return principal{}, false, nil
@@ -86,7 +155,7 @@ func (s *Server) authenticate(r *http.Request) (principal, bool, error) {
 	if !valid {
 		return principal{}, false, nil
 	}
-	return principal{sessionID: cookie.Value}, true, nil
+	return principal{method: authCookie, sessionID: cookie.Value}, true, nil
 }
 
 // requireAuth is the gate in front of every non-public /api/ route.
@@ -99,18 +168,27 @@ func (s *Server) authenticate(r *http.Request) (principal, bool, error) {
 // it keeps the cookie off cross-site requests in the first place. Neither
 // measure alone covers every browser, and together they do.
 func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
+	return s.gate(true, next)
+}
+
+// gate authenticates and then calls next. enforceJSON carries the CSRF rule;
+// the inbound route turns it off because it legitimately carries
+// message/rfc822, which a cross-site form cannot set either.
+func (s *Server) gate(enforceJSON bool, next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if !requireJSONContentType(w, r) {
+		if enforceJSON && !requireJSONContentType(w, r) {
 			return
 		}
 
 		p, ok, err := s.authenticate(r)
 		if err != nil {
-			s.log.Error("auth session check failed", "error", err)
+			s.log.Error("auth check failed", "error", err)
 			writeError(w, http.StatusInternalServerError, "Could not validate authentication")
 			return
 		}
 		if !ok {
+			// One message for every failure: which part was wrong is not the
+			// caller's business.
 			writeError(w, http.StatusUnauthorized, "Authentication required")
 			return
 		}
@@ -376,10 +454,15 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := s.store.DeleteAuthSession(r.Context(), p.sessionID); err != nil {
-		s.log.Error("auth session deletion failed", "error", err)
-		writeError(w, http.StatusInternalServerError, "Could not log out")
-		return
+	// An API-key caller has no login session to revoke: p.sessionID is its
+	// synthetic inbox session, not an auth_sessions row. Answering ok is the
+	// honest result — the key itself is unaffected by logout.
+	if p.method == authCookie {
+		if err := s.store.DeleteAuthSession(r.Context(), p.sessionID); err != nil {
+			s.log.Error("auth session deletion failed", "error", err)
+			writeError(w, http.StatusInternalServerError, "Could not log out")
+			return
+		}
 	}
 
 	clearAuthCookie(w, r)
@@ -399,12 +482,19 @@ type changePasswordRequest struct {
 // read mail and being able to take the account over. Other sessions are dropped
 // so a password change actually locks out whoever knew the old one; the
 // caller's own session survives so the UI does not have to log in again.
+//
+// Cookie only: knowing the current password through an API key would let a
+// leaked key take over the account, the same escalation the key routes refuse.
 func (s *Server) handlePassword(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
 	p, ok := principalFrom(r)
 	if !ok {
 		writeError(w, http.StatusUnauthorized, "Authentication required")
+		return
+	}
+	if !p.allowsManagement() {
+		writeError(w, http.StatusForbidden, "Changing the password requires a browser login")
 		return
 	}
 

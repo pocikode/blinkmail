@@ -36,7 +36,7 @@ The web UI states this too, so users are not surprised.
     │                        │        → Email Worker          │
     │                        │                                │
     │                        │  POST /api/inbound             │
-    │                        │  Authorization: Bearer <secret>│
+    │                        │  Authorization: Bearer <key>   │
     │                        │  X-Envelope-From / To          │
     │                        │  body = raw MIME               │
     │                        ├───────────────────────────────>│
@@ -52,8 +52,8 @@ The web UI states this too, so users are not surprised.
 1. Cloudflare Email Routing accepts mail for your domain and hands it to the
    Email Worker.
 2. The Worker forwards the **raw MIME** bytes to the application's
-   `POST /api/inbound`, with a bearer secret and the SMTP envelope metadata in
-   headers. It does no parsing.
+   `POST /api/inbound`, with a managed API key as a bearer credential and the
+   SMTP envelope metadata in headers. It does no parsing.
 3. The application validates the request, parses the MIME in Go, and stores the
    subject and text body in SQLite — creating the inbox if it does not exist.
    The inbox creation and the message insert commit together, and only then is
@@ -85,25 +85,24 @@ Requires Go 1.27+.
 ```bash
 # 1. Configure. Use placeholder domains for local testing.
 cp .env.example .env
-# Generate a real secret even locally — startup refuses a weak one:
-openssl rand -hex 32
 
 # 2. Run against a local database. INITIAL_PASSWORD is required on the first
 #    start only: it seeds the admin password.
 MAIL_DOMAINS="mail.example.com" \
 DATA_DIR="./data" \
 LISTEN_ADDR=":8080" \
-INBOUND_SECRET="$(openssl rand -hex 32)" \
 INITIAL_PASSWORD="a-strong-password" \
   go run ./cmd/blinkmail
 ```
 
 Open <http://localhost:8080>, sign in with `INITIAL_PASSWORD`, click
-**New → Random**, then deliver a test message:
+**New → Random**, then create an API key in **Settings → API keys** and deliver
+a test message with it:
 
 ```bash
+API_KEY="bm_..."   # shown once when you create the key
 curl -X POST localhost:8080/api/inbound \
-  -H "Authorization: Bearer $INBOUND_SECRET" \
+  -H "Authorization: Bearer $API_KEY" \
   -H "Content-Type: message/rfc822" \
   -H "X-Envelope-From: sender@gmail.com" \
   -H "X-Envelope-To: <the address from the UI>@mail.example.com" \
@@ -118,7 +117,7 @@ Click **Refresh** in the UI and the message appears.
 
 ```bash
 cp .env.example .env
-$EDITOR .env            # set real domains, a strong secret, an initial password
+$EDITOR .env            # set real domains and an initial password
 docker compose up -d --build
 docker compose logs -f blinkmail
 ```
@@ -161,7 +160,6 @@ docker run -d --name blinkmail \
   -v blinkmail-data:/data \
   -e MAIL_DOMAINS="mail.example.com" \
   -e DATA_DIR="/data" \
-  -e INBOUND_SECRET="$(openssl rand -hex 32)" \
   -e INITIAL_PASSWORD="a-strong-password" \
   blinkmail
 ```
@@ -169,8 +167,8 @@ docker run -d --name blinkmail \
 ## Configuration
 
 All configuration is environment variables. The application **refuses to start**
-if required values are missing or invalid — in particular it will not start an
-unauthenticated mail-ingestion endpoint.
+if required values are missing or invalid. API access is authenticated with keys
+managed in the web UI, so there is no shared secret in the environment.
 
 | Variable | Default | Description |
 | --- | --- | --- |
@@ -178,15 +176,13 @@ unauthenticated mail-ingestion endpoint.
 | `DATA_DIR` | `/data` | Data directory; the database is `$DATA_DIR/db.sql` |
 | `APP_NAME` | `Blinkmail` | Name shown in the UI |
 | `MAIL_DOMAINS` | *(required)* | Comma-separated domains; first is the default |
-| `INBOUND_SECRET` | *(required, ≥32 chars)* | Bearer secret for `/api/inbound` |
 | `INITIAL_PASSWORD` | *(required on first start, ≥8 chars)* | Seeds the web UI admin password **once**; ignored afterwards |
 | `MAX_INBOUND_BYTES` | `26214400` (25 MiB) | Raw message size cap |
 | `LOG_LEVEL` | `info` | `debug`, `info`, `warn`, `error` |
 
 Startup validation rejects: a missing or malformed domain list, duplicate
-domains, an empty data directory, a missing inbound secret, a secret shorter
-than 32 characters, and an `INITIAL_PASSWORD` shorter than 8 characters when it
-is set.
+domains, an empty data directory, and an `INITIAL_PASSWORD` shorter than 8
+characters when it is set.
 
 ### Web UI login
 
@@ -231,6 +227,25 @@ See [API.md](API.md#web-ui-login) for the endpoints and the cookie attributes.
 > still never leaves the loopback hop, but if you want the flag, forward the
 > original scheme or terminate TLS on the app itself.
 
+### API keys
+
+Programmatic access — including the Email Worker's `POST /api/inbound` — is
+authenticated with keys created in the web UI. There is no shared secret in the
+environment and nothing to configure before the first start.
+
+1. Sign in and open **Settings → API keys**.
+2. Enter a name (for example `Email Worker`) and click **Create key**.
+3. Copy the key immediately. It is shown **once**; only a SHA-256 hash and a
+   12-character display prefix are stored.
+4. Paste it into the relay's Worker secret:
+   `npx wrangler secret put API_KEY`.
+
+Keys can be revoked at any time from the same panel; revocation takes effect on
+the next request. A key cannot sign in to the UI, change the password, or create
+and delete other keys — so a leaked key cannot escalate to account takeover. An
+API client needs no `x-session-id`: each key has its own stable inbox session,
+created on first use.
+
 ### Upgrading from an older version
 
 Older versions stored the database at `$DATA_DIR/blinkmail.db` and let you set
@@ -259,8 +274,7 @@ routing rules, and Email Routing must be enabled explicitly.
 cd relay
 npm install                                  # devDependencies: wrangler only
 $EDITOR wrangler.toml                        # set INBOUND_URL and MAX_RAW_BYTES
-npx wrangler secret put INBOUND_SECRET       # paste the SAME value as the
-                                             # app's INBOUND_SECRET
+npx wrangler secret put API_KEY              # paste a key created in the app UI
 npx wrangler deploy
 ```
 
@@ -268,8 +282,13 @@ Set `INBOUND_URL` to your public HTTPS endpoint, e.g.
 `https://mail.example.com/api/inbound`. `MAX_RAW_BYTES` should equal
 `MAX_INBOUND_BYTES` so both sides agree on the cap.
 
-Never put `INBOUND_SECRET` in `wrangler.toml` — it would be committed and
-visible in the Cloudflare dashboard config. Use `wrangler secret put`.
+Create the key in the Blinkmail UI: sign in, open **Settings → API keys**,
+create a key named for the Worker, and copy the plaintext shown once. Never put
+it in `wrangler.toml` — it would be committed and visible in the Cloudflare
+dashboard config. Use `wrangler secret put`.
+
+To rotate, create a second key, update the Worker secret, then revoke the old
+key in the UI. Revocation takes effect immediately.
 
 ### 2. Enable Email Routing for your domain
 
@@ -373,8 +392,8 @@ then discarded, with no bounce and no retry.
   also returns `200`, so the Worker does not retry forever.
 - The Worker treats a non-200 response as failure and distinguishes two cases:
   - **Permanent** (`message.setReject()` → sender bounces, no retry): oversized
-    message, missing envelope recipient, or a 4xx from the application (bad
-    secret, invalid envelope, unsupported domain).
+    message, missing envelope recipient, or a 4xx from the application (bad or
+    revoked API key, invalid envelope, unsupported domain).
   - **Transient** (throw → Cloudflare may retry): the VPS is unreachable, a
     network error occurred, or the application returned 5xx.
 
@@ -470,8 +489,9 @@ running can lose committed data.
 
 ## Security notes
 
-- The inbound secret is compared in constant time and is never returned by any
-  public route or written to logs.
+- API keys are stored only as a SHA-256 hash; the plaintext is returned once at
+  creation, never by any other route, and never written to logs. Lookups compare
+  the hash in constant time, and a key cannot create or revoke keys.
 - The admin password is stored as a salted PBKDF2-HMAC-SHA256 hash (600 000
   iterations) and compared in constant time. Plaintext passwords, hashes and
   cookie values are never logged.
@@ -499,10 +519,6 @@ cd relay && node --test
 
 ## Troubleshooting
 
-**`refusing to start an unauthenticated inbound mail endpoint`**
-`INBOUND_SECRET` is unset or shorter than 32 characters. Generate one
-with `openssl rand -hex 32` and set it in `.env`.
-
 **`INITIAL_PASSWORD must be set on first start: it seeds the admin password`**
 The database has no password yet and the variable is empty. Set
 `INITIAL_PASSWORD` (at least 8 characters) in `.env` and start again. This only
@@ -526,9 +542,9 @@ docker compose up -d
 Set a comma-separated list of real domains, e.g. `mail.example.com,mail.example.org`.
 
 **Worker returns 401 / messages are rejected permanently with "rejected message (401)"**
-The Worker's `INBOUND_SECRET` binding does not match the application's
-`INBOUND_SECRET` environment variable. Re-run
-`npx wrangler secret put INBOUND_SECRET` with the application's value.
+The Worker's `API_KEY` secret is missing, revoked, or not a key from this
+instance. Create a key in **Settings → API keys**, then re-run
+`npx wrangler secret put API_KEY`. Revoked keys stop working immediately.
 
 **Worker throws "Relay failed to reach ..."**
 `INBOUND_URL` is wrong, the VPS is down, or TLS is failing. The Worker cannot

@@ -9,9 +9,6 @@ import (
 	"pocikode/blinkmail/internal/config"
 )
 
-// A secret long enough to pass the minimum-length check.
-const validSecret = "0123456789abcdef0123456789abcdef" // 32 chars
-
 // setEnv applies environment variables for the duration of a test. t.Setenv
 // restores the previous value afterwards and forbids t.Parallel, which is the
 // right trade here: config is read from the process environment, so tests must
@@ -46,8 +43,7 @@ func unsetEnv(t *testing.T, key string) {
 func validEnv(t *testing.T) {
 	t.Helper()
 	setEnv(t, map[string]string{
-		"MAIL_DOMAINS":   "mail.example.com,mail.example.org",
-		"INBOUND_SECRET": validSecret,
+		"MAIL_DOMAINS": "mail.example.com,mail.example.org",
 		// Clear anything the outer environment may have set, so defaults apply.
 		"LISTEN_ADDR":       "",
 		"APP_NAME":          "",
@@ -189,18 +185,6 @@ func TestLoadRejectsInvalidConfig(t *testing.T) {
 			env:     map[string]string{"MAIL_DOMAINS": " , , "},
 			wantErr: "MAIL_DOMAINS",
 		},
-		"missing secret": {
-			env:     map[string]string{"INBOUND_SECRET": ""},
-			wantErr: "INBOUND_SECRET must be set",
-		},
-		"secret too short": {
-			env:     map[string]string{"INBOUND_SECRET": "short"},
-			wantErr: "at least 32 characters",
-		},
-		"secret exactly 31 chars": {
-			env:     map[string]string{"INBOUND_SECRET": strings.Repeat("a", 31)},
-			wantErr: "at least 32 characters",
-		},
 		"domain without dot": {
 			env:     map[string]string{"MAIL_DOMAINS": "localhost"},
 			wantErr: "must contain at least one dot",
@@ -265,24 +249,6 @@ func TestLoadRejectsInvalidConfig(t *testing.T) {
 				t.Errorf("Load() error = %q; want it to mention %q", err, tc.wantErr)
 			}
 		})
-	}
-}
-
-// TestMissingSecretExplainsHowToFix asserts the operator gets an actionable
-// message, since this is the most likely misconfiguration.
-func TestMissingSecretExplainsHowToFix(t *testing.T) {
-	validEnv(t)
-	setEnv(t, map[string]string{"INBOUND_SECRET": ""})
-
-	_, err := config.Load()
-	if err == nil {
-		t.Fatal("Load() succeeded without a secret")
-	}
-	msg := err.Error()
-	for _, want := range []string{"refusing to start", "openssl rand -hex 32"} {
-		if !strings.Contains(msg, want) {
-			t.Errorf("error %q should mention %q", msg, want)
-		}
 	}
 }
 

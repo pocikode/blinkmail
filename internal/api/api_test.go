@@ -18,12 +18,14 @@ import (
 	"pocikode/blinkmail/internal/store"
 )
 
-// testEnv bundles a Server, its store, and the configured secret for use in a
+// testEnv bundles a Server, its store, and a managed API key for use in a
 // single test.
 type testEnv struct {
-	srv      *api.Server
-	store    *store.Store
-	secret   string
+	srv    *api.Server
+	store  *store.Store
+	apiKey string
+	// apiKeyID is the id of apiKey, for tests that revoke it.
+	apiKeyID string
 	password string
 	// cookie is the login cookie obtained in newTestEnv. Most tests exercise
 	// the app as a logged-in browser, so doRequest sends it automatically;
@@ -69,7 +71,6 @@ func newTestEnv(t *testing.T) testEnv {
 		DBPath:          path,
 		AppName:         "Blinkmail",
 		MailDomains:     []string{"mail.example.com", "mail.example.org"},
-		InboundSecret:   "test-secret-value-at-least-32-chars-long",
 		MaxInboundBytes: 1 << 20, // 1 MiB for tests
 	}
 
@@ -81,11 +82,34 @@ func newTestEnv(t *testing.T) testEnv {
 	env := testEnv{
 		srv:      srv,
 		store:    st,
-		secret:   cfg.InboundSecret,
 		password: testPassword,
 	}
 	env.cookie = env.login(t, testPassword)
+	// Every environment starts with one key, the way an operator would create it
+	// for the relay, so delivery tests exercise the real creation path.
+	env.apiKey, env.apiKeyID = env.createAPIKey(t, "relay")
 	return env
+}
+
+// createAPIKey mints a key through the API and returns its plaintext and id.
+func (e testEnv) createAPIKey(t *testing.T, name string) (key, id string) {
+	t.Helper()
+	w := e.doRequest(http.MethodPost, "/api/keys", map[string]string{"name": name},
+		map[string]string{"Content-Type": "application/json"})
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create API key: %d %s", w.Code, w.Body.String())
+	}
+	var resp struct {
+		ID  string `json:"id"`
+		Key string `json:"key"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("create API key unmarshal: %v", err)
+	}
+	if resp.Key == "" || resp.ID == "" {
+		t.Fatal("create API key returned an empty key or id")
+	}
+	return resp.Key, resp.ID
 }
 
 // login performs POST /api/login and returns the resulting cookie.
@@ -196,8 +220,8 @@ func (e testEnv) createInbox(t *testing.T, sid, localPart, domain string) (strin
 	return inbox.Address, w.Code
 }
 
-// TestGetConfig verifies the public settings endpoint and that the inbound
-// secret is never leaked.
+// TestGetConfig verifies the public settings endpoint and that no API key
+// material is leaked.
 func TestGetConfig(t *testing.T) {
 	e := newTestEnv(t)
 	w := e.doRequest(http.MethodGet, "/api/config", nil, nil)
@@ -227,14 +251,14 @@ func TestGetConfig(t *testing.T) {
 		t.Errorf("mailDomains = %v", cfg.MailDomains)
 	}
 
-	// The secret must NOT appear anywhere in the response body or headers.
-	if strings.Contains(w.Body.String(), e.secret) {
-		t.Error("inbound secret leaked in config response")
+	// No key material may appear anywhere in the response body or headers.
+	if strings.Contains(w.Body.String(), e.apiKey) {
+		t.Error("API key leaked in config response")
 	}
 	for k, vals := range w.Header() {
 		for _, v := range vals {
-			if strings.Contains(v, e.secret) {
-				t.Errorf("inbound secret leaked in header %s: %s", k, v)
+			if strings.Contains(v, e.apiKey) {
+				t.Errorf("API key leaked in header %s: %s", k, v)
 			}
 		}
 	}
@@ -544,7 +568,7 @@ func TestClaimExistingInbox(t *testing.T) {
 	// Deliver a message to that address.
 	raw := "Subject: Shared\n\nbody"
 	w := e.deliverRaw(raw, "sender@example.com", addr, map[string]string{
-		"Authorization": "Bearer " + e.secret,
+		"Authorization": "Bearer " + e.apiKey,
 		"Content-Type":  "message/rfc822",
 	})
 	if w.Code != http.StatusOK {
@@ -585,7 +609,7 @@ func TestUnlinkPreservesMessages(t *testing.T) {
 
 	addr, _ := e.createInbox(t, sid, "keep", "mail.example.com")
 	e.deliverRaw("Subject: Keep\n\nbody", "x@y.com", addr, map[string]string{
-		"Authorization": "Bearer " + e.secret,
+		"Authorization": "Bearer " + e.apiKey,
 	})
 
 	// Unlink it. State-changing requests must declare a JSON content type, which
@@ -759,7 +783,6 @@ func testConfig(e testEnv) config.Config {
 		DBPath:          "/unused/in/tests",
 		AppName:         "Blinkmail",
 		MailDomains:     []string{"mail.example.com", "mail.example.org"},
-		InboundSecret:   e.secret,
 		MaxInboundBytes: 1 << 20,
 	}
 }

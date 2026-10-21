@@ -11,7 +11,7 @@ import (
 	"pocikode/blinkmail/internal/store"
 )
 
-// TestInboundRequiresAuth verifies missing or wrong secrets are rejected.
+// TestInboundRequiresAuth verifies missing or wrong API keys are rejected.
 func TestInboundRequiresAuth(t *testing.T) {
 	e := newTestEnv(t)
 
@@ -21,17 +21,17 @@ func TestInboundRequiresAuth(t *testing.T) {
 		t.Errorf("no auth: status = %d, want 401", w.Code)
 	}
 
-	// Wrong secret.
+	// Unknown key.
 	w = e.deliverRaw("Subject: Wrong\n\nbody", "from@x.com", "to@mail.example.com", map[string]string{
-		"Authorization": "Bearer wrong-secret-value-at-least-32-chars-long",
+		"Authorization": "Bearer bm_" + strings.Repeat("0", 64),
 	})
 	if w.Code != http.StatusUnauthorized {
-		t.Errorf("wrong secret: status = %d, want 401", w.Code)
+		t.Errorf("wrong key: status = %d, want 401", w.Code)
 	}
 
 	// Missing "Bearer " prefix.
 	w = e.deliverRaw("Subject: No prefix\n\nbody", "from@x.com", "to@mail.example.com", map[string]string{
-		"Authorization": e.secret,
+		"Authorization": e.apiKey,
 	})
 	if w.Code != http.StatusUnauthorized {
 		t.Errorf("no prefix: status = %d, want 401", w.Code)
@@ -72,7 +72,7 @@ func TestInboundValidatesEnvelopeTo(t *testing.T) {
 			// deliverRaw sets X-Envelope-To from its parameter, so an empty
 			// envelopeTo exercises the missing-header path.
 			w := e.deliverRaw("Subject: Test\n\nbody", "from@x.com", tc.envelopeTo, map[string]string{
-				"Authorization": "Bearer " + e.secret,
+				"Authorization": "Bearer " + e.apiKey,
 			})
 			if w.Code != tc.wantStatus {
 				t.Errorf("status = %d, want %d (body: %s)", w.Code, tc.wantStatus, w.Body.String())
@@ -92,7 +92,7 @@ func TestInboundEnvelopeFromNullReversePath(t *testing.T) {
 
 	raw := "From: bounce@mailer.example.org\nSubject: Auto-reply\n\nbody"
 	w := e.deliverRaw(raw, "<>", "user@mail.example.com", map[string]string{
-		"Authorization": "Bearer " + e.secret,
+		"Authorization": "Bearer " + e.apiKey,
 	})
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", w.Code)
@@ -130,7 +130,7 @@ func TestInboundEnvelopeFromFallbackToUnknown(t *testing.T) {
 
 	raw := "Subject: No sender\n\nbody"
 	w := e.deliverRaw(raw, "<>", "unknown@mail.example.com", map[string]string{
-		"Authorization": "Bearer " + e.secret,
+		"Authorization": "Bearer " + e.apiKey,
 	})
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d", w.Code)
@@ -161,7 +161,7 @@ func TestInboundEnvelopeFromInvalidRejected(t *testing.T) {
 
 	for _, bad := range []string{"not an email", "@nodomain.com", "user@", "user@nodot"} {
 		w := e.deliverRaw("Subject: Bad from\n\nbody", bad, "user@mail.example.com", map[string]string{
-			"Authorization": "Bearer " + e.secret,
+			"Authorization": "Bearer " + e.apiKey,
 		})
 		if w.Code != http.StatusBadRequest {
 			t.Errorf("envelope from %q: status = %d, want 400", bad, w.Code)
@@ -177,7 +177,7 @@ func TestInboundEmptyBody(t *testing.T) {
 	e := newTestEnv(t)
 
 	w := e.deliverRaw("", "from@x.com", "user@mail.example.com", map[string]string{
-		"Authorization": "Bearer " + e.secret,
+		"Authorization": "Bearer " + e.apiKey,
 	})
 	if w.Code != http.StatusBadRequest {
 		t.Errorf("status = %d, want 400", w.Code)
@@ -194,7 +194,7 @@ func TestInboundSizeLimit(t *testing.T) {
 	// The test env sets a 1 MiB limit. Exceed it.
 	bigBody := strings.Repeat("A", (1<<20)+1000)
 	w := e.deliverRaw("Subject: Big\n\n"+bigBody, "from@x.com", "user@mail.example.com", map[string]string{
-		"Authorization": "Bearer " + e.secret,
+		"Authorization": "Bearer " + e.apiKey,
 	})
 	if w.Code != http.StatusRequestEntityTooLarge {
 		t.Errorf("status = %d, want 413", w.Code)
@@ -206,7 +206,7 @@ func TestInboundSizeLimit(t *testing.T) {
 	// Exactly at the limit should succeed.
 	atLimit := strings.Repeat("B", (1<<20)-100)
 	w = e.deliverRaw("Subject: At limit\n\n"+atLimit, "from@x.com", "user2@mail.example.com", map[string]string{
-		"Authorization": "Bearer " + e.secret,
+		"Authorization": "Bearer " + e.apiKey,
 	})
 	if w.Code != http.StatusOK {
 		t.Errorf("at limit: status = %d, want 200", w.Code)
@@ -222,7 +222,7 @@ func TestInboundDeduplication(t *testing.T) {
 	raw := "Subject: Dedupe test\n\nbody"
 	addr := "dedupe@mail.example.com"
 	headers := map[string]string{
-		"Authorization":   "Bearer " + e.secret,
+		"Authorization":   "Bearer " + e.apiKey,
 		"X-Envelope-From": "from@example.org",
 		"X-Envelope-To":   addr,
 	}
@@ -290,7 +290,7 @@ func TestInboundDifferentRawNotDeduped(t *testing.T) {
 
 	addr := "distinct@mail.example.com"
 	headers := map[string]string{
-		"Authorization":   "Bearer " + e.secret,
+		"Authorization":   "Bearer " + e.apiKey,
 		"X-Envelope-From": "from@example.org",
 		"X-Envelope-To":   addr,
 	}
@@ -345,7 +345,7 @@ func TestInboundCreatesMissingInbox(t *testing.T) {
 	}
 
 	w := e.deliverRaw("Subject: Early\n\nbody", "from@x.com", addr, map[string]string{
-		"Authorization": "Bearer " + e.secret,
+		"Authorization": "Bearer " + e.apiKey,
 	})
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d", w.Code)
@@ -387,7 +387,7 @@ func TestInboundDeliveryHashMatches(t *testing.T) {
 	addr := "hash@mail.example.com"
 
 	w := e.deliverRaw(raw, envelopeFrom, addr, map[string]string{
-		"Authorization": "Bearer " + e.secret,
+		"Authorization": "Bearer " + e.apiKey,
 	})
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d", w.Code)
@@ -472,7 +472,7 @@ func TestInboundParsesMIMECorrectly(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			addr := "mime" + string(rune('0'+i)) + "@mail.example.com"
 			w := e.deliverRaw(tc.raw, "from@x.com", addr, map[string]string{
-				"Authorization": "Bearer " + e.secret,
+				"Authorization": "Bearer " + e.apiKey,
 			})
 			if w.Code != http.StatusOK {
 				t.Fatalf("status = %d", w.Code)

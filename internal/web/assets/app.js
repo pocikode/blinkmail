@@ -28,6 +28,14 @@ var els = {
   newPasswordInput: document.getElementById('newPasswordInput'),
   passwordSubmitBtn: document.getElementById('passwordSubmitBtn'),
   passwordStatus: document.getElementById('passwordStatus'),
+  apiKeyForm: document.getElementById('apiKeyForm'),
+  apiKeyName: document.getElementById('apiKeyName'),
+  apiKeyCreateBtn: document.getElementById('apiKeyCreateBtn'),
+  apiKeyStatus: document.getElementById('apiKeyStatus'),
+  apiKeyList: document.getElementById('apiKeyList'),
+  apiKeyReveal: document.getElementById('apiKeyReveal'),
+  apiKeyValue: document.getElementById('apiKeyValue'),
+  apiKeyCopyBtn: document.getElementById('apiKeyCopyBtn'),
   inboxSelect: document.getElementById('inboxSelect'),
   copyBtn: document.getElementById('copyBtn'),
   refreshBtn: document.getElementById('refreshBtn'),
@@ -259,6 +267,9 @@ function showLoginView(message) {
   els.appView.hidden = true;
   els.settingsPanel.hidden = true;
   els.settingsBtn.setAttribute('aria-expanded', 'false');
+  // Never leave a revealed plaintext key on screen after signing out.
+  els.apiKeyReveal.hidden = true;
+  els.apiKeyValue.value = '';
   els.loginView.hidden = false;
   els.passwordInput.value = '';
   clearLoginError();
@@ -373,7 +384,147 @@ function toggleSettings() {
   els.settingsBtn.setAttribute('aria-expanded', hidden ? 'true' : 'false');
   if (hidden) {
     els.currentPasswordInput.focus();
+    // Key metadata is only loaded when the panel is opened, so a browser that
+    // never visits settings makes no extra requests.
+    loadApiKeys().catch(function (err) {
+      showApiKeyStatus((err && err.message) || 'Could not load API keys.', true);
+    });
+  } else {
+    // Closing the panel drops the one-time plaintext from the DOM.
+    els.apiKeyReveal.hidden = true;
+    els.apiKeyValue.value = '';
   }
+}
+
+// ---- API keys --------------------------------------------------------------
+
+// showApiKeyStatus reports the outcome of a key action next to the form, via
+// textContent only.
+function showApiKeyStatus(message, isError) {
+  els.apiKeyStatus.textContent = message || '';
+  els.apiKeyStatus.classList.toggle('is-error', Boolean(isError));
+}
+
+// renderApiKeys lists key metadata. Names are user input, so every field is
+// assigned with textContent — never as markup.
+function renderApiKeys(keys) {
+  clear(els.apiKeyList);
+
+  if (!keys || keys.length === 0) {
+    els.apiKeyList.appendChild(el('p', 'api-key-empty',
+      'No API keys yet. Create one to connect the Email Worker or an API client.'));
+    return;
+  }
+
+  keys.forEach(function (key) {
+    var item = el('div', 'api-key-item');
+
+    var meta = el('div', 'api-key-meta');
+    meta.appendChild(el('div', 'api-key-name', key.name));
+    var detail = el('div');
+    detail.appendChild(document.createTextNode('Prefix: '));
+    detail.appendChild(el('span', 'api-key-prefix', key.prefix + '…'));
+    detail.appendChild(document.createTextNode(
+      ' • Created ' + formatTimestamp(key.created_at)));
+    detail.appendChild(document.createTextNode(
+      ' • Last used ' + (key.last_used_at ? formatTimestamp(key.last_used_at) : 'never')));
+    meta.appendChild(detail);
+
+    var remove = el('button', 'danger', 'Revoke');
+    remove.type = 'button';
+    remove.setAttribute('aria-label', 'Revoke API key ' + key.name);
+    remove.addEventListener('click', function () {
+      revokeApiKey(key.id, key.name).catch(function (err) {
+        showApiKeyStatus((err && err.message) || 'Could not revoke the key.', true);
+      });
+    });
+
+    item.appendChild(meta);
+    item.appendChild(remove);
+    els.apiKeyList.appendChild(item);
+  });
+}
+
+// loadApiKeys fetches key metadata. The plaintext is never part of this
+// response; only creation returns it.
+async function loadApiKeys() {
+  var keys = await fetchJson('/api/keys');
+  renderApiKeys(Array.isArray(keys) ? keys : []);
+}
+
+// submitCreateApiKey mints a key and reveals the plaintext exactly once.
+async function submitCreateApiKey() {
+  var name = els.apiKeyName.value.trim();
+  if (!name) {
+    showApiKeyStatus('Enter a name for the key.', true);
+    els.apiKeyName.focus();
+    return;
+  }
+
+  els.apiKeyCreateBtn.disabled = true;
+  showApiKeyStatus('', false);
+  try {
+    var created = await fetchJson('/api/keys', {
+      method: 'POST',
+      body: { name: name },
+    });
+    els.apiKeyName.value = '';
+    showCreatedApiKey(created && created.key);
+    await loadApiKeys();
+    showApiKeyStatus('Key created. Copy it now — it is not stored anywhere.', false);
+    showToast('API key created');
+  } catch (err) {
+    showApiKeyStatus((err && err.message) || 'Could not create the key.', true);
+  } finally {
+    els.apiKeyCreateBtn.disabled = false;
+  }
+}
+
+// showCreatedApiKey puts the one-time plaintext into the read-only field and
+// makes the warning visible. It is deliberately not logged or stored.
+function showCreatedApiKey(key) {
+  els.apiKeyValue.value = key || '';
+  els.apiKeyReveal.hidden = !key;
+  if (key) {
+    els.apiKeyValue.focus();
+    els.apiKeyValue.select();
+  }
+}
+
+// copyApiKey copies the revealed key with the same secure-context fallback the
+// inbox address copy uses.
+async function copyApiKey() {
+  var key = els.apiKeyValue.value;
+  if (!key) return;
+
+  try {
+    if (navigator.clipboard && window.isSecureContext) {
+      await navigator.clipboard.writeText(key);
+    } else {
+      els.apiKeyValue.select();
+      var copied = document.execCommand('copy');
+      if (!copied) throw new Error('execCommand copy failed');
+    }
+    showToast('📋 API key copied');
+  } catch (err) {
+    showApiKeyStatus('Could not copy the key. Select it and copy manually.', true);
+  }
+}
+
+// revokeApiKey deletes a key after an explicit confirmation. Deletion is
+// immediate and cannot be undone: the plaintext is not recoverable.
+async function revokeApiKey(id, name) {
+  var ok = window.confirm(
+    'Revoke the API key "' + name + '"?\n\n' +
+    'Anything still using it — including the Email Worker — stops working ' +
+    'immediately. This cannot be undone.'
+  );
+  if (!ok) return;
+
+  await fetchJson('/api/keys/' + encodeURIComponent(id), { method: 'DELETE' });
+  await loadApiKeys();
+  showApiKeyStatus('Key revoked.', false);
+  showToast('API key revoked');
 }
 
 // ---- Config ----------------------------------------------------------------
@@ -639,6 +790,16 @@ function init() {
       showPasswordStatus((err && err.message) || 'Could not update the password.', true);
     });
   });
+
+  // API key management. Only a browser login can reach these routes; a key
+  // cannot mint or revoke keys.
+  els.apiKeyForm.addEventListener('submit', function (event) {
+    event.preventDefault();
+    submitCreateApiKey().catch(function (err) {
+      showApiKeyStatus((err && err.message) || 'Could not create the key.', true);
+    });
+  });
+  bind('apiKeyCopyBtn', copyApiKey);
 
   bind('copyBtn', copyAddress);
   bind('refreshBtn', loadMessages);

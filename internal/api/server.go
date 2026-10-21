@@ -8,7 +8,6 @@ package api
 import (
 	"context"
 	"crypto/rand"
-	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -75,6 +74,13 @@ type Store interface {
 	AuthSessionValid(ctx context.Context, id string) (bool, error)
 	DeleteAuthSession(ctx context.Context, id string) error
 	DeleteOtherAuthSessions(ctx context.Context, keepID string) error
+
+	// Managed API keys.
+	CreateAPIKey(ctx context.Context, id, name, prefix, keyHash string) error
+	APIKeys(ctx context.Context) ([]store.APIKey, error)
+	DeleteAPIKey(ctx context.Context, id string) error
+	APIKeyByHash(ctx context.Context, keyHash string) (store.APIKey, error)
+	TouchAPIKey(ctx context.Context, id string) error
 }
 
 // Server wires configuration, storage and routing together.
@@ -121,10 +127,10 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) { s.mux.Serve
 // routes registers every endpoint.
 //
 // Every /api/ route sits behind the auth gate except the three that must work
-// before a browser has logged in (/api/auth/status, /api/login, /api/config) and
-// /api/inbound, which carries its own bearer secret from the Email Worker and
-// is not a browser credential at all. /healthz stays public so deployment
-// probes do not need credentials.
+// before a browser has logged in (/api/auth/status, /api/login, /api/config).
+// /api/inbound is behind the same gate: the Email Worker authenticates with an
+// API key rather than a browser cookie, but it is no longer a special case.
+// /healthz stays public so deployment probes do not need credentials.
 func (s *Server) routes(assets http.Handler) {
 	mux := s.mux
 
@@ -136,9 +142,16 @@ func (s *Server) routes(assets http.Handler) {
 	// Public settings.
 	mux.Handle("GET /api/config", s.withTimeout(apiTimeout, s.handleConfig))
 
-	// Authenticated: a valid login cookie is required for everything below.
+	// Authenticated: a valid login cookie or API key is required for everything
+	// below.
 	mux.Handle("POST /api/logout", s.protected(apiTimeout, s.handleLogout))
 	mux.Handle("POST /api/password", s.protected(apiTimeout, s.handlePassword))
+
+	// API key management. The handlers additionally require a cookie, so a key
+	// cannot mint or revoke keys.
+	mux.Handle("GET /api/keys", s.protected(apiTimeout, s.handleListAPIKeys))
+	mux.Handle("POST /api/keys", s.protected(apiTimeout, s.handleCreateAPIKey))
+	mux.Handle("DELETE /api/keys/{id}", s.protected(apiTimeout, s.handleDeleteAPIKey))
 
 	// JSON API.
 	mux.Handle("GET /api/session", s.protected(apiTimeout, s.handleSession))
@@ -147,10 +160,11 @@ func (s *Server) routes(assets http.Handler) {
 	mux.Handle("DELETE /api/inboxes/{address}", s.protected(apiTimeout, s.handleDeleteInbox))
 	mux.Handle("GET /api/inboxes/{address}/messages", s.protected(apiTimeout, s.handleMessages))
 
-	// Authenticated inbound mail from the Email Worker. It has its own bearer
-	// secret and is deliberately outside the cookie gate: the relay is not a
-	// browser and never holds a login session.
-	mux.Handle("POST /api/inbound", s.withTimeout(inboundTimeout, s.handleInbound))
+	// Inbound mail from the Email Worker. Same gate, different credential: the
+	// relay authenticates with a managed API key. It is exempt from the JSON
+	// Content-Type rule because it carries message/rfc822, which a cross-site
+	// form cannot set either.
+	mux.Handle("POST /api/inbound", s.protectedInbound(inboundTimeout, s.handleInbound))
 
 	// Deployment health check.
 	mux.Handle("GET /healthz", s.withTimeout(10*time.Second, s.handleHealth))
@@ -168,6 +182,14 @@ func (s *Server) routes(assets http.Handler) {
 // the gate is recovered and logged like any other handler failure.
 func (s *Server) protected(d time.Duration, next http.HandlerFunc) http.Handler {
 	return s.withTimeout(d, s.requireAuth(next))
+}
+
+// protectedInbound is protected() without the JSON Content-Type rule, for the
+// one route that legitimately carries message/rfc822. A cross-site form cannot
+// set that type either, so the CSRF defence is not weakened: it is the same
+// reason a form cannot set application/json.
+func (s *Server) protectedInbound(d time.Duration, next http.HandlerFunc) http.Handler {
+	return s.withTimeout(d, s.gate(false, next))
 }
 
 // withTimeout binds a per-request deadline and recovers from panics so one bad
@@ -281,48 +303,52 @@ func sessionFromRequest(r *http.Request) (string, error) {
 	return raw, nil
 }
 
-// requireSession resolves the caller's session. It writes the error response
-// and returns false when the session is missing, malformed or unknown.
+// requireSession resolves the caller's inbox session. It writes the error
+// response and returns false when the session is missing, malformed or unknown.
+//
+// A browser supplies x-session-id explicitly. An API-key caller does not have
+// to: its key has one stable synthetic session (key_<id>), created on first use
+// here. Without that fallback every API caller would have to call /api/session
+// and juggle a second header, and inbox ownership would be easy to get wrong.
 func (s *Server) requireSession(w http.ResponseWriter, r *http.Request) (string, bool) {
 	token, err := sessionFromRequest(r)
 	if err != nil {
 		writeError(w, http.StatusUnauthorized, "Invalid session token")
 		return "", false
 	}
-	if token == "" {
-		writeError(w, http.StatusBadRequest, "Missing x-session-id header")
-		return "", false
-	}
 
 	ctx := r.Context()
+	fromKey := false
+	if token == "" {
+		p, ok := principalFrom(r)
+		if !ok || p.method != authAPIKey {
+			writeError(w, http.StatusBadRequest, "Missing x-session-id header")
+			return "", false
+		}
+		token = p.sessionID
+		fromKey = true
+	}
+
 	ok, err := s.store.SessionExists(ctx, token)
 	if err != nil {
 		s.log.Error("session lookup failed", "error", err)
 		writeError(w, http.StatusInternalServerError, "Could not validate session")
 		return "", false
 	}
+	if !ok && fromKey {
+		// CreateSession is idempotent, so concurrent first requests are safe.
+		if err := s.store.CreateSession(ctx, token); err != nil {
+			s.log.Error("session creation failed", "error", err)
+			writeError(w, http.StatusInternalServerError, "Could not create session")
+			return "", false
+		}
+		ok = true
+	}
 	if !ok {
 		writeError(w, http.StatusUnauthorized, "Unknown session, request a new one from /api/session")
 		return "", false
 	}
 	return token, true
-}
-
-// ---- Inbound authentication ----
-
-// authorized reports whether the request carries the configured bearer secret.
-// Comparison is constant-time to avoid leaking the secret byte by byte.
-func (s *Server) authorized(r *http.Request) bool {
-	h := r.Header.Get("Authorization")
-	const prefix = "Bearer "
-	if !strings.HasPrefix(h, prefix) {
-		return false
-	}
-	got := strings.TrimSpace(strings.TrimPrefix(h, prefix))
-	if got == "" {
-		return false
-	}
-	return subtle.ConstantTimeCompare([]byte(got), []byte(s.cfg.InboundSecret)) == 1
 }
 
 // ---- Shared helpers ----

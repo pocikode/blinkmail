@@ -2,7 +2,7 @@
 //
 // Configuration comes from environment variables only. Invalid or missing
 // values cause startup to fail with a clear error rather than silently running
-// an unsafe server (notably: no unauthenticated public ingestion endpoint).
+// an unsafe server.
 package config
 
 import (
@@ -37,9 +37,6 @@ type Config struct {
 	AppName string
 	// MailDomains lists accepted mail domains; MailDomains[0] is the default.
 	MailDomains []string
-	// InboundSecret is the shared bearer secret the Email Worker must present
-	// when calling POST /api/inbound.
-	InboundSecret string
 	// InitialPassword seeds the admin password on first start only. Once a
 	// password exists in the database this value is ignored; main() decides
 	// whether it is required, because only it can see the database.
@@ -75,7 +72,6 @@ func Load() (Config, error) {
 		ListenAddr:      getEnv("LISTEN_ADDR", DefaultListenAddr),
 		DataDir:         dataDirEnv(),
 		AppName:         getEnv("APP_NAME", DefaultAppName),
-		InboundSecret:   os.Getenv("INBOUND_SECRET"),
 		InitialPassword: os.Getenv("INITIAL_PASSWORD"),
 		MaxInboundBytes: 25 << 20, // 25 MiB
 	}
@@ -123,15 +119,9 @@ func (c Config) validate() error {
 		return fmt.Errorf("APP_NAME must not be empty")
 	}
 
-	// A missing or weak ingestion secret would expose a public endpoint that
-	// accepts arbitrary mail. Refuse to start instead.
-	switch {
-	case c.InboundSecret == "":
-		return fmt.Errorf("INBOUND_SECRET must be set: refusing to start an unauthenticated inbound mail endpoint (generate one with: openssl rand -hex 32)")
-	case len(c.InboundSecret) < 32:
-		return fmt.Errorf("INBOUND_SECRET must be at least 32 characters, got %d", len(c.InboundSecret))
-	}
-
+	// Inbound ingestion is authenticated with a managed API key created in the
+	// web UI, so there is no secret to validate here: a fresh instance simply
+	// has no keys and the relay cannot deliver until an operator makes one.
 	if c.MaxInboundBytes <= 0 {
 		return fmt.Errorf("MAX_INBOUND_BYTES must be positive, got %d", c.MaxInboundBytes)
 	}

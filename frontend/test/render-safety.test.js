@@ -95,7 +95,8 @@ function boot() {
   // eval's completion value is that object. The captured functions are the
   // exact shipped ones — nothing is redefined here.
   const exported = (0, eval)(
-    APP_JS + '\n;({ renderMessages, showError, showEmptyState, showToast });',
+    APP_JS +
+      '\n;({ renderMessages, renderApiKeys, showError, showEmptyState, showToast });',
   );
 
   return { window, document, ...exported };
@@ -202,6 +203,32 @@ test('showEmptyState renders titles/subtitles as inert text', () => {
   assert.deepEqual(dangerousNodes(list), NO_DANGER, 'empty state contains live HTML nodes');
   // Payload survived as literal text.
   assert.ok(list.textContent.includes('<script>'), 'empty-state payload not shown as text');
+
+  assertNoPoisonRan();
+});
+
+test('renderApiKeys renders key names as inert text', () => {
+  // Key names are operator input, so they take the same textContent path as
+  // mail. The one-time plaintext is never part of this render at all.
+  api.renderApiKeys([
+    {
+      id: 'k1',
+      name: XSS.subject,
+      prefix: 'bm_9a1b2c3d4',
+      created_at: '2026-10-21T06:00:00.000Z',
+      last_used_at: null,
+    },
+  ]);
+
+  const list = api.document.getElementById('apiKeyList');
+  assert.equal(list.querySelectorAll('.api-key-item').length, 1, 'expected one key item');
+  assert.deepEqual(dangerousNodes(list), NO_DANGER, 'key list contains live HTML nodes');
+  assert.ok(
+    list.textContent.includes('<script>window.__PWNED_SUBJ=1</script>'),
+    'key name payload missing as text',
+  );
+  assert.ok(list.textContent.includes('bm_9a1b2c3d4'), 'prefix missing');
+  assert.ok(list.textContent.includes('never'), 'unused key should read as never used');
 
   assertNoPoisonRan();
 });

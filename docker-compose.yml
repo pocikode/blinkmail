@@ -1,7 +1,7 @@
 # Blinkmail — single-service Compose deployment.
 #
-# Copy .env.example to .env, fill in your domains, a strong inbound secret and an
-# initial web UI password, then:
+# Copy .env.example to .env, fill in your domains and an initial web UI
+# password, then:
 #   docker compose up -d --build
 #
 # The application listens on :8080 inside the container. The published port is
@@ -38,8 +38,8 @@ services:
       # the app itself refuses to start only when the database has no password
       # yet. Change the password from the UI afterwards (Settings).
       INITIAL_PASSWORD: "${INITIAL_PASSWORD:-}"
-      # Must match the relay Worker's INBOUND_SECRET.
-      INBOUND_SECRET: "${INBOUND_SECRET:?set INBOUND_SECRET in .env}"
+      # Inbound mail authenticates with a managed API key created in the UI
+      # (Settings → API keys); there is no shared secret to configure here.
       MAX_INBOUND_BYTES: "${MAX_INBOUND_BYTES:-26214400}"
       LOG_LEVEL: "${LOG_LEVEL:-info}"
 

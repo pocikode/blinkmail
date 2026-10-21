@@ -52,6 +52,10 @@ func TestGateRejectsUnauthenticatedAPI(t *testing.T) {
 		{http.MethodDelete, "/api/inboxes/a%40mail.example.com"},
 		{http.MethodPost, "/api/logout"},
 		{http.MethodPost, "/api/password"},
+		{http.MethodGet, "/api/keys"},
+		{http.MethodPost, "/api/keys"},
+		{http.MethodDelete, "/api/keys/someid"},
+		{http.MethodPost, "/api/inbound"},
 	}
 	for _, route := range protected {
 		w := e.doRequestRaw(route.method, route.path, nil,

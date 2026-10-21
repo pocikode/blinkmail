@@ -26,7 +26,7 @@ export const MAX_RAW_BYTES = 25 * 1024 * 1024;
  * Validate the Worker configuration. A missing secret would forward mail to an
  * endpoint that cannot authenticate it, so refuse rather than send.
  *
- * @param {{INBOUND_URL?: string, INBOUND_SECRET?: string}} env
+ * @param {{INBOUND_URL?: string, API_KEY?: string}} env
  */
 function validateEnv(env) {
   if (!env) {
@@ -35,8 +35,8 @@ function validateEnv(env) {
   if (!env.INBOUND_URL) {
     throw new Error('INBOUND_URL binding is not set');
   }
-  if (!env.INBOUND_SECRET) {
-    throw new Error('INBOUND_SECRET binding is not set');
+  if (!env.API_KEY) {
+    throw new Error('API_KEY binding is not set');
   }
 }
 
@@ -86,7 +86,7 @@ function failTransient(reason) {
  *   rawSize?: number,
  *   setReject?: (reason: string) => void,
  * }} message
- * @param {{INBOUND_URL: string, INBOUND_SECRET: string, MAX_RAW_BYTES?: string|number}} env
+ * @param {{INBOUND_URL: string, API_KEY: string, MAX_RAW_BYTES?: string|number}} env
  * @param {{waitUntil?: (p: Promise<unknown>) => void}} [_ctx]
  * @returns {Promise<void>}
  */
@@ -128,8 +128,9 @@ export async function handleEmail(message, env, _ctx) {
     response = await fetch(url, {
       method: 'POST',
       headers: {
-        // Shared secret; configured as a Wrangler secret, never in wrangler.toml.
-        Authorization: `Bearer ${env.INBOUND_SECRET}`,
+        // Managed API key, created in the Blinkmail UI and stored as a Wrangler
+        // secret — never in wrangler.toml.
+        Authorization: `Bearer ${env.API_KEY}`,
         'Content-Type': 'message/rfc822',
         // Envelope metadata drives routing and dedupe on the app side.
         'X-Envelope-From': envelopeFrom,

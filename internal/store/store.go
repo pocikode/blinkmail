@@ -2,7 +2,8 @@
 //
 // It uses a four-table model (inboxes, messages, sessions, session_inboxes)
 // with a unique delivery_hash column for deduplicating repeated Email Worker
-// deliveries.
+// deliveries, plus the authentication tables (settings, auth_sessions) and
+// api_keys for managed API credentials.
 //
 // Every query uses bound parameters. No user input is ever interpolated into
 // SQL.

@@ -40,6 +40,7 @@ type failingStore struct {
 	// logged in.
 	failAuthSession bool
 	failPassword    bool
+	failAPIKey      bool
 }
 
 func (f *failingStore) SessionExists(ctx context.Context, sid string) (bool, error) {
@@ -159,14 +160,50 @@ func (f *failingStore) DeleteOtherAuthSessions(ctx context.Context, keepID strin
 	return f.inner.DeleteOtherAuthSessions(ctx, keepID)
 }
 
+// ---- Managed API keys ----
+
+func (f *failingStore) CreateAPIKey(ctx context.Context, id, name, prefix, keyHash string) error {
+	if f.failAPIKey {
+		return errStorage
+	}
+	return f.inner.CreateAPIKey(ctx, id, name, prefix, keyHash)
+}
+
+func (f *failingStore) APIKeys(ctx context.Context) ([]store.APIKey, error) {
+	if f.failAPIKey {
+		return nil, errStorage
+	}
+	return f.inner.APIKeys(ctx)
+}
+
+func (f *failingStore) DeleteAPIKey(ctx context.Context, id string) error {
+	if f.failAPIKey {
+		return errStorage
+	}
+	return f.inner.DeleteAPIKey(ctx, id)
+}
+
+func (f *failingStore) APIKeyByHash(ctx context.Context, keyHash string) (store.APIKey, error) {
+	if f.failAPIKey {
+		return store.APIKey{}, errStorage
+	}
+	return f.inner.APIKeyByHash(ctx, keyHash)
+}
+
+// TouchAPIKey never fails here: a touch failure is explicitly non-fatal, and
+// TestAPIKeyTouchFailureIsNotFatal exercises that with a dedicated store.
+func (f *failingStore) TouchAPIKey(ctx context.Context, id string) error {
+	return f.inner.TouchAPIKey(ctx, id)
+}
+
 // failingEnv is a server wired to a failingStore, plus the credentials needed
-// to talk to it: the inbound bearer secret and a valid login cookie. The cookie
-// is issued against the same underlying database, so the auth gate accepts it
-// even though the store is wrapped.
+// to talk to it: a managed API key and a valid login cookie. Both are issued
+// against the same underlying database, so the auth gate accepts them even
+// though the store is wrapped.
 type failingEnv struct {
 	srv    *api.Server
 	store  *failingStore
-	secret string
+	apiKey string
 	cookie *http.Cookie
 }
 
@@ -183,7 +220,7 @@ func newFailingEnv(t *testing.T, mutate func(*failingStore)) failingEnv {
 		Store:  fs,
 		Logger: discardLogger(),
 	})
-	return failingEnv{srv: srv, store: fs, secret: e.secret, cookie: e.cookie}
+	return failingEnv{srv: srv, store: fs, apiKey: e.apiKey, cookie: e.cookie}
 }
 
 // get issues an authenticated GET against the server.
@@ -199,9 +236,9 @@ func (fe failingEnv) get(path string, headers map[string]string) *httptest.Respo
 }
 
 // deliver posts raw MIME to a given server.
-func deliver(srv *api.Server, secret, raw, from, to string) *httptest.ResponseRecorder {
+func deliver(srv *api.Server, key, raw, from, to string) *httptest.ResponseRecorder {
 	req := httptest.NewRequest(http.MethodPost, "/api/inbound", strings.NewReader(raw))
-	req.Header.Set("Authorization", "Bearer "+secret)
+	req.Header.Set("Authorization", "Bearer "+key)
 	req.Header.Set("Content-Type", "message/rfc822")
 	req.Header.Set("X-Envelope-From", from)
 	req.Header.Set("X-Envelope-To", to)
@@ -219,7 +256,7 @@ func TestInboundStorageFailureIsNotAcknowledged(t *testing.T) {
 		f.failDeliver = true
 	})
 
-	w := deliver(env.srv, env.secret, "Subject: Will fail\n\nbody", "from@x.com", "fail@mail.example.com")
+	w := deliver(env.srv, env.apiKey, "Subject: Will fail\n\nbody", "from@x.com", "fail@mail.example.com")
 
 	if w.Code != http.StatusInternalServerError {
 		t.Errorf("status = %d, want 500 on storage failure", w.Code)
@@ -248,7 +285,7 @@ func TestInboundDuplicateStillSucceeds(t *testing.T) {
 	e := newTestEnv(t)
 
 	raw := "Subject: Twice\n\nbody"
-	hdr := map[string]string{"Authorization": "Bearer " + e.secret}
+	hdr := map[string]string{"Authorization": "Bearer " + e.apiKey}
 	w := e.deliverRaw(raw, "from@x.com", "twice@mail.example.com", hdr)
 	if w.Code != http.StatusOK {
 		t.Fatalf("first: %d", w.Code)

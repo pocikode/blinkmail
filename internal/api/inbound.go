@@ -33,18 +33,13 @@ type inboundResponse struct {
 
 // handleInbound receives raw MIME from the Email Worker.
 //
-// Authentication, envelope validation, the size limit and storage all complete
+// The caller has already been authenticated by the gate (an API key, not the
+// login cookie). Envelope validation, the size limit and storage all complete
 // before any success is acknowledged. Committing first is what makes the
 // response truthful: the reference implementation logged failures and still let
 // Cloudflare treat the message as delivered, silently losing mail.
 func (s *Server) handleInbound(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-
-	if !s.authorized(r) {
-		// Do not distinguish a missing header from a wrong secret.
-		writeError(w, http.StatusUnauthorized, "Unauthorized")
-		return
-	}
 
 	envelopeFrom := strings.TrimSpace(r.Header.Get(headerEnvelopeFrom))
 	envelopeTo := strings.TrimSpace(r.Header.Get(headerEnvelopeTo))

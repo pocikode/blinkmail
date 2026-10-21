@@ -121,15 +121,55 @@
           </form>
         </div>
 
-        <!--
-          Placeholder: T04 adds API keys here. The panel exists now so that work
-          lands as an addition rather than a restructuring of the settings UI.
-        -->
         <div class="settings-group" id="apiKeysSection">
           <h3>API keys</h3>
-          <p class="settings-hint" id="apiKeysPlaceholder">
-            API keys for programmatic access will be managed here.
+          <p class="settings-hint">
+            Keys authenticate API clients and the Cloudflare Email Worker with
+            <code>Authorization: Bearer &lt;key&gt;</code>. A key cannot sign in
+            here or create other keys. Revoke one as soon as it is no longer
+            needed.
           </p>
+
+          <!-- One-time reveal. The key is written with textContent and lives in
+               a read-only field so it can be selected and copied. -->
+          <div class="api-key-reveal" id="apiKeyReveal" hidden>
+            <p class="api-key-warning" id="apiKeyWarning">
+              Copy this key now — it will never be shown again.
+            </p>
+            <div class="api-key-copy-row">
+              <label class="visually-hidden" for="apiKeyValue">New API key</label>
+              <input
+                id="apiKeyValue"
+                type="text"
+                readonly
+                spellcheck="false"
+                autocomplete="off"
+              />
+              <button type="button" id="apiKeyCopyBtn">📋 Copy</button>
+            </div>
+          </div>
+
+          <form id="apiKeyForm" novalidate>
+            <label class="field-label" for="apiKeyName">New key name</label>
+            <input
+              id="apiKeyName"
+              type="text"
+              autocomplete="off"
+              spellcheck="false"
+              maxlength="64"
+              placeholder="Email Worker"
+              required
+            />
+            <button type="submit" id="apiKeyCreateBtn">Create key</button>
+            <div
+              class="settings-status"
+              id="apiKeyStatus"
+              role="status"
+              aria-live="polite"
+            ></div>
+          </form>
+
+          <div class="api-key-list" id="apiKeyList"></div>
         </div>
       </section>
 

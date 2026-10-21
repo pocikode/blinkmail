@@ -7,11 +7,12 @@ Base URL: `https://<your-host>` (for example `http://127.0.0.1:8080` locally).
 
 ## Authentication
 
-There are three distinct auth mechanisms:
+There are three distinct auth mechanisms. Every `/api/` route requires the
+login cookie **or** a managed API key except `/api/login`, `/api/auth/status` and
+`/api/config`.
 
 1. **Web UI login** uses a password-only admin session cookie. See
-   [Web UI login](#web-ui-login) below. Every `/api/` route requires it except
-   `/api/login`, `/api/auth/status` and `/api/config`.
+   [Web UI login](#web-ui-login) below.
 
 2. **Browser sessions** use the `x-session-id` header. Obtain a token from
    `GET /api/session`; the server generates it with `crypto/rand` and stores it.
@@ -24,11 +25,23 @@ There are three distinct auth mechanisms:
    the `x-session-id` are independent: logging in does not create an inbox
    session, and rotating the inbox session does not log you out.
 
-3. **Inbound mail** (`POST /api/inbound`) uses a shared secret:
-   `Authorization: Bearer <INBOUND_SECRET>`. Only the Cloudflare Email
-   Worker holds this secret. It is never exposed by `/api/config` or any other
-   public route, and the application refuses to start without it. It is
-   deliberately outside the cookie gate — the relay is not a browser.
+3. **Managed API keys** authenticate with `Authorization: Bearer bm_...`.
+   Create and revoke them in the web UI (**Settings → API keys**), or with the
+   `/api/keys` routes below. The Cloudflare Email Worker uses one to call
+   `POST /api/inbound`; API clients use one for the JSON API.
+
+   A key is `bm_` followed by 32 random bytes as hex (67 characters). Only its
+   SHA-256 hash and a 12-character display prefix are stored; the plaintext is
+   returned **once**, from the create call, and never again. There is no KDF
+   because a 256-bit random key has nothing to stretch.
+
+   An API-key caller does **not** send `x-session-id`: each key has a stable
+   synthetic inbox session (`key_<key id>`), created lazily on first use. That
+   keeps inbox ownership per key instead of global. Cookie-authenticated
+   browsers keep the explicit `x-session-id` behaviour.
+
+   A key cannot manage keys: the `/api/keys` routes reject key-authenticated
+   callers with `403`, so a leaked key cannot mint a replacement.
 
 ### Web UI login
 
@@ -80,25 +93,27 @@ every other session.
 
 ### Protected routes
 
-Everything under `/api/` requires a valid `blinkmail_auth` cookie:
+Everything under `/api/` requires a valid `blinkmail_auth` cookie or an API key:
 
 | Route | Public? |
 | --- | --- |
 | `GET /api/auth/status` | public |
 | `POST /api/login` | public |
 | `GET /api/config` | public |
-| `POST /api/inbound` | bearer secret, not a cookie |
 | `GET /healthz` | public |
-| all other `/api/` routes | **cookie required** |
+| `POST /api/inbound` | cookie **or** API key (the Worker uses a key) |
+| `GET/POST/DELETE /api/keys...` | **cookie only** — an API key gets `403` |
+| all other `/api/` routes | cookie **or** API key |
 
-A missing, malformed, unknown or expired cookie is:
+A missing, malformed, unknown or expired credential is:
 
 ```json
 { "error": "Authentication required" }
 ```
 
-with status `401`. A state-changing request whose `Content-Type` is not
-`application/json` is `415` before authentication is even considered.
+with status `401`. Which part failed is never revealed. A state-changing request
+whose `Content-Type` is not `application/json` is `415` before authentication is
+even considered — except `POST /api/inbound`, which carries `message/rfc822`.
 
 ## Errors
 
@@ -111,8 +126,8 @@ Every error response uses this shape with an appropriate status code:
 | Status | Meaning |
 | --- | --- |
 | 400 | Validation failure: missing session header, bad local part, unsupported domain, malformed JSON, bad envelope, new password too short |
-| 401 | Missing/invalid login cookie; unknown session token; wrong password; login auth failure |
-| 403 | Inbox not linked to the calling session |
+| 401 | Missing/invalid cookie or API key; unknown session token; wrong password |
+| 403 | Inbox not linked to the calling session; API key used on `/api/keys` |
 | 409 | Random address allocation exhausted retries |
 | 413 | Raw message exceeds the configured size limit |
 | 415 | State-changing request without an `application/json` Content-Type |
@@ -365,11 +380,12 @@ as escaped text and cannot execute.
 
 ### POST `/api/inbound`
 
-Receives raw MIME from the Email Worker. **Bearer-authenticated.**
+Receives raw MIME from the Email Worker. **Bearer-authenticated with a managed
+API key** — the same gate as every other `/api/` route.
 
 ```http
 POST /api/inbound
-Authorization: Bearer <INBOUND_SECRET>
+Authorization: Bearer bm_<key>
 Content-Type: message/rfc822
 X-Envelope-From: sender@gmail.com
 X-Envelope-To: kopisenja@mail.example.com
@@ -401,11 +417,85 @@ Response `200` (already committed):
 { "ok": true, "messageId": "", "duplicate": true }
 ```
 
-Errors: `401` bad secret, `400` bad envelope/domain/empty body, `413` too large,
-`422` unparsable MIME, `500` storage failure.
+Errors: `401` missing/unknown/revoked key, `400` bad envelope/domain/empty body,
+`413` too large, `422` unparsable MIME, `500` storage failure.
 
 Only `200` is treated as delivered. The Worker rejects or fails on anything else
 so a lost message is never acknowledged.
+
+### GET `/api/keys`
+
+Lists API key metadata. **Cookie only**: an API-key caller gets `403`.
+
+```http
+GET /api/keys
+Cookie: blinkmail_auth=<token>
+```
+
+Response `200` (array, newest first):
+
+```json
+[
+  {
+    "id": "6f1c...",
+    "name": "Email Worker",
+    "prefix": "bm_9a1b2c3d4",
+    "created_at": "2026-10-21T06:00:00.000Z",
+    "last_used_at": "2026-10-21T06:05:00.000Z"
+  }
+]
+```
+
+`last_used_at` is `null` until the key is first used. The plaintext and the
+hash are never part of this response.
+
+Errors: `401` not authenticated, `403` authenticated with an API key, `500`
+storage failure.
+
+### POST `/api/keys`
+
+Creates a key and returns the plaintext **exactly once**. **Cookie only.**
+
+```http
+POST /api/keys
+Content-Type: application/json
+Cookie: blinkmail_auth=<token>
+
+{ "name": "Email Worker" }
+```
+
+`name` is trimmed, required and at most 64 characters.
+
+Response `201`:
+
+```json
+{
+  "id": "6f1c...",
+  "name": "Email Worker",
+  "key": "bm_<64 hex characters>"
+}
+```
+
+Copy `key` immediately: it is not stored and cannot be retrieved again. Only a
+SHA-256 of it and the 12-character display prefix are kept.
+
+Errors: `400` missing/blank/too-long name, `401`, `403` API-key caller, `415`
+non-JSON content type, `500` storage.
+
+### DELETE `/api/keys/{id}`
+
+Revokes a key. The key stops authenticating immediately. **Cookie only.**
+
+```http
+DELETE /api/keys/6f1c...
+Cookie: blinkmail_auth=<token>
+```
+
+```json
+{ "ok": true }
+```
+
+Errors: `401`, `403` API-key caller, `404` unknown id, `500` storage.
 
 ### GET `/healthz`
 
@@ -438,9 +528,13 @@ ADDR=$(curl -s -b "$JAR" -X POST $BASE/api/inboxes \
   -d '{"domain":"mail.example.com"}' | jq -r .address)
 echo "$ADDR"
 
-# 4. Simulate an inbound delivery (normally the Email Worker does this).
+# 4. Create an API key for the relay and use it for a simulated delivery.
+API_KEY=$(curl -s -b "$JAR" -X POST $BASE/api/keys \
+  -H "Content-Type: application/json" \
+  -d '{"name":"Email Worker"}' | jq -r .key)
+
 curl -s -X POST $BASE/api/inbound \
-  -H "Authorization: Bearer $INBOUND_SECRET" \
+  -H "Authorization: Bearer $API_KEY" \
   -H "Content-Type: message/rfc822" \
   -H "X-Envelope-From: sender@gmail.com" \
   -H "X-Envelope-To: $ADDR" \
@@ -476,11 +570,24 @@ curl -s -b "$JAR" -X POST $BASE/api/logout \
 | Password change | Other sessions revoked; the caller stays signed in |
 | Expired cookie | `401`; the UI returns to the login form |
 
+## API key behaviour summary
+
+| Situation | Result |
+| --- | --- |
+| Create a key | `201` with the plaintext; shown once and never again |
+| List keys | Metadata only — id, name, prefix, created, last used |
+| Unknown/malformed/revoked key | `401 Authentication required` |
+| Valid key on `/api/inboxes` | Works with no `x-session-id`; inboxes are per key |
+| Valid key on `/api/inbound` | Accepted, same gate as any other route |
+| Key on `/api/keys` | `403`; a key cannot mint or revoke keys |
+| Successful key request | `last_used_at` updated best effort, never fatal |
+
 ## Session behaviour summary
 
 | Situation | Result |
 | --- | --- |
 | Logged-in browser, no token | `GET /api/session` issues a fresh token |
+| API key, no token | Stable synthetic session `key_<id>`, created lazily |
 | Reload with a stored token | Same token resumed |
 | Token from another deployment | Malformed or unknown → new token issued |
 | Two browsers | Separate sessions, but both can claim the same public address |

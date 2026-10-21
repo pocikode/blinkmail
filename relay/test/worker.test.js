@@ -9,9 +9,9 @@ import assert from 'node:assert/strict';
 
 import { handleEmail, MAX_RAW_BYTES } from '../worker.js';
 
-const SECRET = 'relay-test-secret-value-at-least-32-chars';
+const API_KEY = 'bm_' + 'a'.repeat(64);
 const URL = 'https://mail.example.com/api/inbound';
-const ENV = { INBOUND_URL: URL, INBOUND_SECRET: SECRET };
+const ENV = { INBOUND_URL: URL, API_KEY };
 
 /** Build a fake ReadableStream from a string. */
 function rawStream(text) {
@@ -72,7 +72,7 @@ describe('relay worker', () => {
     const { url, init } = calls[0];
     assert.equal(url, URL);
     assert.equal(init.method, 'POST');
-    assert.equal(init.headers.Authorization, `Bearer ${SECRET}`);
+    assert.equal(init.headers.Authorization, `Bearer ${API_KEY}`);
     assert.equal(init.headers['Content-Type'], 'message/rfc822');
     // Envelope recipient is lowercased and used verbatim (not the MIME To).
     assert.equal(init.headers['X-Envelope-To'], 'box@mail.example.com');
@@ -153,18 +153,18 @@ describe('relay worker', () => {
     assert.match(event._rejects[0], /rejected message \(401\)/);
   });
 
-  test('fails fast when INBOUND_SECRET is not configured', async () => {
+  test('fails fast when API_KEY is not configured', async () => {
     const event = makeEvent({});
     await assert.rejects(
       () => handleEmail(event, { INBOUND_URL: URL }),
-      /INBOUND_SECRET binding is not set/,
+      /API_KEY binding is not set/,
     );
   });
 
   test('fails fast when INBOUND_URL is not configured', async () => {
     const event = makeEvent({});
     await assert.rejects(
-      () => handleEmail(event, { INBOUND_SECRET: SECRET }),
+      () => handleEmail(event, { API_KEY }),
       /INBOUND_URL binding is not set/,
     );
   });
