@@ -103,6 +103,18 @@ func (f *failingStore) Messages(ctx context.Context, addr string) ([]store.Messa
 	}
 	return f.inner.Messages(ctx, addr)
 }
+func (f *failingStore) MessagesSince(ctx context.Context, addr, since string, limit int) ([]store.Message, error) {
+	if f.failMessages {
+		return nil, errStorage
+	}
+	return f.inner.MessagesSince(ctx, addr, since, limit)
+}
+func (f *failingStore) InboxSummaries(ctx context.Context) ([]store.InboxSummary, error) {
+	if f.failListInbox {
+		return nil, errStorage
+	}
+	return f.inner.InboxSummaries(ctx)
+}
 func (f *failingStore) DeliverMessage(ctx context.Context, m store.NewMessage) error {
 	if f.failDeliver {
 		return errStorage
@@ -162,11 +174,11 @@ func (f *failingStore) DeleteOtherAuthSessions(ctx context.Context, keepID strin
 
 // ---- Managed API keys ----
 
-func (f *failingStore) CreateAPIKey(ctx context.Context, id, name, prefix, keyHash string) error {
+func (f *failingStore) CreateAPIKey(ctx context.Context, id, name, prefix, keyHash, permissions string) error {
 	if f.failAPIKey {
 		return errStorage
 	}
-	return f.inner.CreateAPIKey(ctx, id, name, prefix, keyHash)
+	return f.inner.CreateAPIKey(ctx, id, name, prefix, keyHash, permissions)
 }
 
 func (f *failingStore) APIKeys(ctx context.Context) ([]store.APIKey, error) {

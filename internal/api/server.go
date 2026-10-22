@@ -64,6 +64,9 @@ type Store interface {
 	UnlinkInboxFromSession(ctx context.Context, sessionID, address string) error
 	IsInboxInSession(ctx context.Context, sessionID, address string) (bool, error)
 	Messages(ctx context.Context, address string) ([]store.Message, error)
+	// MessagesSince and InboxSummaries back the key-only /api/v1 read surface.
+	MessagesSince(ctx context.Context, address, since string, limit int) ([]store.Message, error)
+	InboxSummaries(ctx context.Context) ([]store.InboxSummary, error)
 	DeliverMessage(ctx context.Context, m store.NewMessage) error
 	CountMessages(ctx context.Context) (int, error)
 
@@ -76,7 +79,7 @@ type Store interface {
 	DeleteOtherAuthSessions(ctx context.Context, keepID string) error
 
 	// Managed API keys.
-	CreateAPIKey(ctx context.Context, id, name, prefix, keyHash string) error
+	CreateAPIKey(ctx context.Context, id, name, prefix, keyHash, permissions string) error
 	APIKeys(ctx context.Context) ([]store.APIKey, error)
 	DeleteAPIKey(ctx context.Context, id string) error
 	APIKeyByHash(ctx context.Context, keyHash string) (store.APIKey, error)
@@ -154,17 +157,23 @@ func (s *Server) routes(assets http.Handler) {
 	mux.Handle("DELETE /api/keys/{id}", s.protected(apiTimeout, s.handleDeleteAPIKey))
 
 	// JSON API.
-	mux.Handle("GET /api/session", s.protected(apiTimeout, s.handleSession))
-	mux.Handle("GET /api/inboxes", s.protected(apiTimeout, s.handleListInboxes))
-	mux.Handle("POST /api/inboxes", s.protected(apiTimeout, s.handleCreateInbox))
-	mux.Handle("DELETE /api/inboxes/{address}", s.protected(apiTimeout, s.handleDeleteInbox))
-	mux.Handle("GET /api/inboxes/{address}/messages", s.protected(apiTimeout, s.handleMessages))
+	mux.Handle("GET /api/session", s.protectedScoped(apiTimeout, scopeRead, s.handleSession))
+	mux.Handle("GET /api/inboxes", s.protectedScoped(apiTimeout, scopeRead, s.handleListInboxes))
+	mux.Handle("POST /api/inboxes", s.protectedScoped(apiTimeout, scopeRead, s.handleCreateInbox))
+	mux.Handle("DELETE /api/inboxes/{address}", s.protectedScoped(apiTimeout, scopeRead, s.handleDeleteInbox))
+	mux.Handle("GET /api/inboxes/{address}/messages", s.protectedScoped(apiTimeout, scopeRead, s.handleMessages))
 
 	// Inbound mail from the Email Worker. Same gate, different credential: the
 	// relay authenticates with a managed API key. It is exempt from the JSON
 	// Content-Type rule because it carries message/rfc822, which a cross-site
 	// form cannot set either.
-	mux.Handle("POST /api/inbound", s.protectedInbound(inboundTimeout, s.handleInbound))
+	mux.Handle("POST /api/inbound", s.protectedInboundScoped(inboundTimeout, scopeInbound, s.handleInbound))
+
+	// External read API. Key-only: this is the integration contract, so the web
+	// UI must never depend on it and a cookie caller is refused rather than
+	// quietly served. The relay key only needs "inbound"; a reader needs "read".
+	mux.Handle("GET /api/v1/inboxes", s.external(apiTimeout, s.handleV1ListInboxes))
+	mux.Handle("GET /api/v1/inboxes/{address}/messages", s.external(apiTimeout, s.handleV1Messages))
 
 	// Deployment health check.
 	mux.Handle("GET /healthz", s.withTimeout(10*time.Second, s.handleHealth))
@@ -184,12 +193,27 @@ func (s *Server) protected(d time.Duration, next http.HandlerFunc) http.Handler 
 	return s.withTimeout(d, s.requireAuth(next))
 }
 
-// protectedInbound is protected() without the JSON Content-Type rule, for the
-// one route that legitimately carries message/rfc822. A cross-site form cannot
-// set that type either, so the CSRF defence is not weakened: it is the same
-// reason a form cannot set application/json.
-func (s *Server) protectedInbound(d time.Duration, next http.HandlerFunc) http.Handler {
-	return s.withTimeout(d, s.gate(false, next))
+// protectedScoped is protected() plus a permission requirement for API-key
+// callers. Cookie callers pass through untouched, so the web UI is unchanged.
+func (s *Server) protectedScoped(d time.Duration, want string, next http.HandlerFunc) http.Handler {
+	return s.withTimeout(d, s.gate(true, next, requirePermission(want)))
+}
+
+// protectedInboundScoped is protected() without the JSON Content-Type rule, for
+// the one route that legitimately carries message/rfc822. A cross-site form
+// cannot set that type either, so the CSRF defence is not weakened: it is the
+// same reason a form cannot set application/json. It also requires the inbound
+// permission, so a read-only integration key cannot inject mail.
+func (s *Server) protectedInboundScoped(d time.Duration, want string, next http.HandlerFunc) http.Handler {
+	return s.withTimeout(d, s.gate(false, next, requirePermission(want)))
+}
+
+// external wraps a /api/v1 handler: key-only and read-scoped. Kept next to
+// protected so the two surfaces stay visibly distinct — /api/ serves the UI,
+// /api/v1/ is the integration contract the UI must never depend on.
+func (s *Server) external(d time.Duration, next http.HandlerFunc) http.Handler {
+	return s.withTimeout(d, s.gate(true, next,
+		requireAPIKeyCredential, requirePermission(scopeRead)))
 }
 
 // withTimeout binds a per-request deadline and recovers from panics so one bad

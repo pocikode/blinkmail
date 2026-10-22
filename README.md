@@ -246,6 +246,15 @@ and delete other keys — so a leaked key cannot escalate to account takeover. A
 API client needs no `x-session-id`: each key has its own stable inbox session,
 created on first use.
 
+Keys are also **scoped**. Each one carries a set of permissions: `inbound` (may
+deliver mail via `POST /api/inbound`) and `read` (may read inboxes and
+messages). Tick both for a key that does everything, or give the relay only
+`inbound` so a leaked relay key cannot read mail. `GET /api/v1/inboxes` and
+`GET /api/v1/inboxes/{address}/messages` are the external read API: API-key-only,
+`read`-scoped, and usable without claiming an address or holding a browser
+session — an integration can poll for new mail in one request. See `API.md` for
+the `since`/`limit` paging rules.
+
 ### Upgrading from an older version
 
 Older versions stored the database at `$DATA_DIR/blinkmail.db` and let you set

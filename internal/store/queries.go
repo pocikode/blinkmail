@@ -194,6 +194,82 @@ func (s *Store) Messages(ctx context.Context, address string) ([]Message, error)
 	return out, nil
 }
 
+// InboxSummary is one row of the external inbox listing.
+type InboxSummary struct {
+	Address        string `json:"address"`
+	CreatedAt      string `json:"created_at"`
+	MessageCount   int    `json:"message_count"`
+	LastReceivedAt string `json:"last_received_at"` // "" when never received
+}
+
+// InboxSummaries returns every inbox that has at least one message, newest
+// activity first. Empty inboxes are excluded: they carry no information for a
+// reader, and the external API is a mail feed rather than an address registry.
+func (s *Store) InboxSummaries(ctx context.Context) ([]InboxSummary, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT i.address, i.created_at, COUNT(m.id), MAX(m.received_at)
+		FROM inboxes i
+		JOIN messages m ON m.inbox_address = i.address
+		GROUP BY i.address
+		ORDER BY strftime('%Y-%m-%dT%H:%M:%fZ', MAX(m.received_at)) DESC, i.address ASC`)
+	if err != nil {
+		return nil, fmt.Errorf("store: list inbox summaries: %w", err)
+	}
+	defer rows.Close()
+
+	out := []InboxSummary{}
+	for rows.Next() {
+		var (
+			sum  InboxSummary
+			last sql.NullString
+		)
+		if err := rows.Scan(&sum.Address, &sum.CreatedAt, &sum.MessageCount, &last); err != nil {
+			return nil, fmt.Errorf("store: scan inbox summary: %w", err)
+		}
+		sum.LastReceivedAt = last.String
+		out = append(out, sum)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: iterate inbox summaries: %w", err)
+	}
+	return out, nil
+}
+
+// MessagesSince returns an inbox's messages older-to-newer, optionally only
+// those received after since (RFC 3339, empty means all), capped at limit.
+//
+// received_at is stored with variable fractional digits (…:48Z vs …:48.768Z),
+// so a raw lexicographic ORDER BY would put …:48.768Z before …:48Z and break the
+// oldest-first guarantee a client pages on. Ordering is done on the timestamp
+// normalised to fixed milliseconds: exact, unlike julianday()'s float. The since
+// filter stays on julianday() because it only has to compare two instants.
+func (s *Store) MessagesSince(ctx context.Context, address, since string, limit int) ([]Message, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, inbox_address, from_address, subject, body, received_at
+		FROM messages
+		WHERE inbox_address = ?
+		  AND (? = '' OR julianday(received_at) > julianday(?))
+		ORDER BY strftime('%Y-%m-%dT%H:%M:%fZ', received_at) ASC, id ASC
+		LIMIT ?`, address, since, since, limit)
+	if err != nil {
+		return nil, fmt.Errorf("store: list messages since: %w", err)
+	}
+	defer rows.Close()
+
+	out := []Message{}
+	for rows.Next() {
+		var m Message
+		if err := rows.Scan(&m.ID, &m.InboxAddress, &m.FromAddress, &m.Subject, &m.Body, &m.ReceivedAt); err != nil {
+			return nil, fmt.Errorf("store: scan message: %w", err)
+		}
+		out = append(out, m)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: iterate messages since: %w", err)
+	}
+	return out, nil
+}
+
 // GetMessage returns a single message by ID.
 func (s *Store) GetMessage(ctx context.Context, id string) (Message, error) {
 	var m Message

@@ -80,24 +80,33 @@ func newAPIKeyID() string { return randomHex(16) }
 
 // apiKeyResponse is one entry of GET /api/keys. It deliberately has no key
 // field: the plaintext is only ever returned by the create response.
+//
+// Permissions is a JSON array, not the stored comma-separated column: the
+// storage format is an implementation detail of the key's capability set.
 type apiKeyResponse struct {
-	ID         string  `json:"id"`
-	Name       string  `json:"name"`
-	Prefix     string  `json:"prefix"`
-	CreatedAt  string  `json:"created_at"`
-	LastUsedAt *string `json:"last_used_at"`
+	ID          string   `json:"id"`
+	Name        string   `json:"name"`
+	Prefix      string   `json:"prefix"`
+	CreatedAt   string   `json:"created_at"`
+	LastUsedAt  *string  `json:"last_used_at"`
+	Permissions []string `json:"permissions"`
 }
 
-// createAPIKeyRequest is the POST /api/keys body.
+// createAPIKeyRequest is the POST /api/keys body. Permissions is a pointer so a
+// missing field (the old UI and existing scripts) is distinguishable from an
+// explicitly empty array, which is a validation error rather than a default.
 type createAPIKeyRequest struct {
-	Name string `json:"name"`
+	Name        string    `json:"name"`
+	Permissions *[]string `json:"permissions"`
 }
 
 // createAPIKeyResponse is the only response that ever carries the plaintext.
+// It echoes permissions so a caller can confirm what it just minted.
 type createAPIKeyResponse struct {
-	ID   string `json:"id"`
-	Name string `json:"name"`
-	Key  string `json:"key"`
+	ID          string   `json:"id"`
+	Name        string   `json:"name"`
+	Key         string   `json:"key"`
+	Permissions []string `json:"permissions"`
 }
 
 // requireCookieOnly refuses key-authenticated callers on key management routes.
@@ -131,11 +140,12 @@ func (s *Server) handleListAPIKeys(w http.ResponseWriter, r *http.Request) {
 	out := make([]apiKeyResponse, 0, len(keys))
 	for _, k := range keys {
 		out = append(out, apiKeyResponse{
-			ID:         k.ID,
-			Name:       k.Name,
-			Prefix:     k.Prefix,
-			CreatedAt:  k.CreatedAt,
-			LastUsedAt: k.LastUsedAt,
+			ID:          k.ID,
+			Name:        k.Name,
+			Prefix:      k.Prefix,
+			CreatedAt:   k.CreatedAt,
+			LastUsedAt:  k.LastUsedAt,
+			Permissions: splitPermissions(k.Permissions),
 		})
 	}
 	writeJSON(w, http.StatusOK, out)
@@ -163,6 +173,18 @@ func (s *Server) handleCreateAPIKey(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Omitted permissions keep the pre-scoping behaviour (a key used both ways).
+	// An explicit empty list is a mistake worth reporting, not a default.
+	permissions := permissionsDefault
+	if req.Permissions != nil {
+		canonical, err := parsePermissions(*req.Permissions)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		permissions = canonical
+	}
+
 	plaintext, hash, err := newAPIKey()
 	if err != nil {
 		s.log.Error("API key generation failed", "error", err)
@@ -171,7 +193,7 @@ func (s *Server) handleCreateAPIKey(w http.ResponseWriter, r *http.Request) {
 	}
 
 	id := newAPIKeyID()
-	if err := s.store.CreateAPIKey(r.Context(), id, name, apiKeyDisplayPrefix(plaintext), hash); err != nil {
+	if err := s.store.CreateAPIKey(r.Context(), id, name, apiKeyDisplayPrefix(plaintext), hash, permissions); err != nil {
 		// Never log the plaintext or the hash, even on failure.
 		s.log.Error("API key creation failed", "error", err)
 		writeError(w, http.StatusInternalServerError, "Could not create API key")
@@ -179,9 +201,14 @@ func (s *Server) handleCreateAPIKey(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Only the id is logged: never the plaintext, and never the hash.
-	s.log.Info("API key created", "key_id", id)
+	s.log.Info("API key created", "key_id", id, "permissions", permissions)
 	// The plaintext appears here and nowhere else, ever again.
-	writeJSON(w, http.StatusCreated, createAPIKeyResponse{ID: id, Name: name, Key: plaintext})
+	writeJSON(w, http.StatusCreated, createAPIKeyResponse{
+		ID:          id,
+		Name:        name,
+		Key:         plaintext,
+		Permissions: splitPermissions(permissions),
+	})
 }
 
 // handleDeleteAPIKey revokes a key. The key's synthetic session is left alone:

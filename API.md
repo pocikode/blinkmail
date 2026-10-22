@@ -9,7 +9,8 @@ Base URL: `https://<your-host>` (for example `http://127.0.0.1:8080` locally).
 
 There are three distinct auth mechanisms. Every `/api/` route requires the
 login cookie **or** a managed API key except `/api/login`, `/api/auth/status` and
-`/api/config`.
+`/api/config`; `/api/v1/` is the exception in the other direction, being
+API-key-only.
 
 1. **Web UI login** uses a password-only admin session cookie. See
    [Web UI login](#web-ui-login) below.
@@ -28,7 +29,8 @@ login cookie **or** a managed API key except `/api/login`, `/api/auth/status` an
 3. **Managed API keys** authenticate with `Authorization: Bearer bm_...`.
    Create and revoke them in the web UI (**Settings → API keys**), or with the
    `/api/keys` routes below. The Cloudflare Email Worker uses one to call
-   `POST /api/inbound`; API clients use one for the JSON API.
+   `POST /api/inbound`; API clients use one for the JSON API. Each key is
+   scoped: a relay key only needs `inbound`, an integration only `read`.
 
    A key is `bm_` followed by 32 random bytes as hex (67 characters). Only its
    SHA-256 hash and a 12-character display prefix are stored; the plaintext is
@@ -42,6 +44,35 @@ login cookie **or** a managed API key except `/api/login`, `/api/auth/status` an
 
    A key cannot manage keys: the `/api/keys` routes reject key-authenticated
    callers with `403`, so a leaked key cannot mint a replacement.
+
+#### Permissions
+
+Each key carries a set of permissions. There are exactly two:
+
+| Permission | Unlocks |
+| --- | --- |
+| `inbound` | `POST /api/inbound` — deliver mail |
+| `read` | the read surface: `/api/v1/...` and the `/api/inboxes*` / `/api/session` routes |
+
+A key with both is "everything a key can do". A key with neither cannot be
+created: an empty list is a `400`, and omitting `permissions` when creating a key
+defaults to `inbound,read` (which is also what keys created before scoping
+carry). The order is canonical — `inbound` before `read`, duplicates removed — so
+`["read","read","inbound"]` is stored as `inbound,read`.
+
+A request that needs a permission the key lacks is `403`:
+
+```json
+{ "error": "API key lacks the \"read\" permission" }
+```
+
+Give the relay Worker only `inbound` and an integration only `read`: a leaked
+read-only key then cannot inject mail. Cookie callers (the web UI) hold every
+permission — scoping exists to limit keys, not the UI.
+
+`/api/v1/` is **key-only**. A cookie caller there gets
+`403 {"error":"API key required"}`: it is the external integration contract and
+the UI must never depend on it.
 
 ### Web UI login
 
@@ -101,9 +132,10 @@ Everything under `/api/` requires a valid `blinkmail_auth` cookie or an API key:
 | `POST /api/login` | public |
 | `GET /api/config` | public |
 | `GET /healthz` | public |
-| `POST /api/inbound` | cookie **or** API key (the Worker uses a key) |
+| `GET /api/v1/...` | **API key only**, needs `read` |
+| `POST /api/inbound` | cookie **or** API key, needs `inbound` |
 | `GET/POST/DELETE /api/keys...` | **cookie only** — an API key gets `403` |
-| all other `/api/` routes | cookie **or** API key |
+| all other `/api/` routes | cookie **or** API key, needs `read` for a key |
 
 A missing, malformed, unknown or expired credential is:
 
@@ -127,7 +159,7 @@ Every error response uses this shape with an appropriate status code:
 | --- | --- |
 | 400 | Validation failure: missing session header, bad local part, unsupported domain, malformed JSON, bad envelope, new password too short |
 | 401 | Missing/invalid cookie or API key; unknown session token; wrong password |
-| 403 | Inbox not linked to the calling session; API key used on `/api/keys` |
+| 403 | Inbox not linked to the calling session; a key missing the required permission; a cookie caller on `/api/v1/` (`API key required`); API key used on `/api/keys` |
 | 409 | Random address allocation exhausted retries |
 | 413 | Raw message exceeds the configured size limit |
 | 415 | State-changing request without an `application/json` Content-Type |
@@ -417,8 +449,9 @@ Response `200` (already committed):
 { "ok": true, "messageId": "", "duplicate": true }
 ```
 
-Errors: `401` missing/unknown/revoked key, `400` bad envelope/domain/empty body,
-`413` too large, `422` unparsable MIME, `500` storage failure.
+Errors: `401` missing/unknown/revoked key, `403` key without the `inbound`
+permission, `400` bad envelope/domain/empty body, `413` too large, `422`
+unparsable MIME, `500` storage failure.
 
 Only `200` is treated as delivered. The Worker rejects or fails on anything else
 so a lost message is never acknowledged.
@@ -441,12 +474,14 @@ Response `200` (array, newest first):
     "name": "Email Worker",
     "prefix": "bm_9a1b2c3d4",
     "created_at": "2026-10-21T06:00:00.000Z",
-    "last_used_at": "2026-10-21T06:05:00.000Z"
+    "last_used_at": "2026-10-21T06:05:00.000Z",
+    "permissions": ["inbound", "read"]
   }
 ]
 ```
 
-`last_used_at` is `null` until the key is first used. The plaintext and the
+`last_used_at` is `null` until the key is first used. `permissions` is a JSON
+array (the stored column is a comma-separated string). The plaintext and the
 hash are never part of this response.
 
 Errors: `401` not authenticated, `403` authenticated with an API key, `500`
@@ -461,10 +496,16 @@ POST /api/keys
 Content-Type: application/json
 Cookie: blinkmail_auth=<token>
 
-{ "name": "Email Worker" }
+{ "name": "Email Worker", "permissions": ["inbound"] }
 ```
 
 `name` is trimmed, required and at most 64 characters.
+
+`permissions` is optional and defaults to `["inbound", "read"]` when omitted, so
+older clients and scripts keep working. When present it must be a non-empty
+array of `inbound` and/or `read`; an explicit `[]` is a `400`, not a default, and
+an unknown name such as `"write"` is a `400`. Duplicates are removed and the
+stored order is always `inbound` before `read`.
 
 Response `201`:
 
@@ -472,15 +513,16 @@ Response `201`:
 {
   "id": "6f1c...",
   "name": "Email Worker",
-  "key": "bm_<64 hex characters>"
+  "key": "bm_<64 hex characters>",
+  "permissions": ["inbound"]
 }
 ```
 
 Copy `key` immediately: it is not stored and cannot be retrieved again. Only a
 SHA-256 of it and the 12-character display prefix are kept.
 
-Errors: `400` missing/blank/too-long name, `401`, `403` API-key caller, `415`
-non-JSON content type, `500` storage.
+Errors: `400` missing/blank/too-long name, empty or unknown permissions, `401`,
+`403` API-key caller, `415` non-JSON content type, `500` storage.
 
 ### DELETE `/api/keys/{id}`
 
@@ -507,6 +549,87 @@ Deployment health check.
 
 Returns `503` with `"status":"unhealthy"` when the database is unreachable.
 
+## External read API `/api/v1/`
+
+The integration contract: **API key only**, and the key needs the `read`
+permission. A cookie caller is `403 {"error":"API key required"}`. Unlike the
+`/api/inboxes*` routes, no `x-session-id` is involved and no address has to be
+claimed first — that is the point: an application can poll an address it never
+created.
+
+### GET `/api/v1/inboxes`
+
+Every inbox that has received at least one message, newest activity first.
+Inboxes with no messages are omitted.
+
+```bash
+curl -s https://<your-host>/api/v1/inboxes \
+  -H "Authorization: Bearer bm_<key>"
+```
+
+```json
+[
+  {
+    "address": "test@relix.web.id",
+    "created_at": "2026-10-21T18:15:48.768Z",
+    "message_count": 3,
+    "last_received_at": "2026-10-21T18:15:48.768Z"
+  }
+]
+```
+
+`last_received_at` is always set here, since an inbox without mail is not listed.
+The response is `[]`, never `null`, when no mail exists.
+
+### GET `/api/v1/inboxes/{address}/messages`
+
+Messages for one address, **oldest first** (`received_at ASC`). Paging with the
+last message's `received_at` as `since` therefore never skips a message.
+
+```bash
+curl -s "https://<your-host>/api/v1/inboxes/test%40relix.web.id/messages?since=2026-10-21T18:15:48.768Z&limit=100" \
+  -H "Authorization: Bearer bm_<key>"
+```
+
+Query parameters:
+
+| Parameter | Rule |
+| --- | --- |
+| `since` | optional RFC 3339 timestamp; only messages received **after** it. Invalid → `400 Invalid since timestamp, want RFC 3339` |
+| `limit` | optional; default `100`, maximum `500` (larger values are clamped). `< 1` or non-numeric → `400` |
+
+Response `200` (array, oldest first; the usual `store.Message` shape):
+
+```json
+[
+  {
+    "id": "msg_fbaa9f286be5a05c0c1159964714f0be",
+    "inbox_address": "test@relix.web.id",
+    "from_address": "sender@gmail.com",
+    "subject": "Hello Blinkmail",
+    "body": "This is the plain text body.",
+    "received_at": "2026-10-21T18:15:48.768Z"
+  }
+]
+```
+
+An address that has **never received mail** is `200 []`, **not** `404`: inboxes
+are created lazily on first delivery, so "not found" would be the normal state
+of a fresh address. Errors: `400` invalid address / `since` / `limit`, `401`
+missing or bad key, `403` key without `read` or a cookie caller, `500` storage.
+
+Poll loop, in one request each time:
+
+```bash
+# First call: everything.
+curl -s "https://<your-host>/api/v1/inboxes/test%40relix.web.id/messages" \
+  -H "Authorization: Bearer $READ_KEY" | jq
+
+# Later calls: pass the last received_at you saw.
+curl -s "https://<your-host>/api/v1/inboxes/test%40relix.web.id/messages?since=$LAST" \
+  -H "Authorization: Bearer $READ_KEY" | jq
+```
+
 ## Full flow example
 
 ```bash
@@ -531,7 +654,7 @@ echo "$ADDR"
 # 4. Create an API key for the relay and use it for a simulated delivery.
 API_KEY=$(curl -s -b "$JAR" -X POST $BASE/api/keys \
   -H "Content-Type: application/json" \
-  -d '{"name":"Email Worker"}' | jq -r .key)
+  -d '{"name":"Email Worker","permissions":["inbound"]}' | jq -r .key)
 
 curl -s -X POST $BASE/api/inbound \
   -H "Authorization: Bearer $API_KEY" \
@@ -540,10 +663,17 @@ curl -s -X POST $BASE/api/inbound \
   -H "X-Envelope-To: $ADDR" \
   --data-binary $'Subject: Test\n\nHello from Blinkmail'
 
-# 5. Read messages.
+# 5. Read messages. The browser route needs the session link...
 curl -s -b "$JAR" \
   "$BASE/api/inboxes/$(printf %s "$ADDR" | jq -sRr @uri)/messages" \
   -H "x-session-id: $SID" | jq
+
+# ...or read them with a read-only key, without any session at all.
+READ_KEY=$(curl -s -b "$JAR" -X POST $BASE/api/keys \
+  -H "Content-Type: application/json" \
+  -d '{"name":"Integration","permissions":["read"]}' | jq -r .key)
+curl -s "$BASE/api/v1/inboxes/$(printf %s "$ADDR" | jq -sRr @uri)/messages" \
+  -H "Authorization: Bearer $READ_KEY" | jq
 
 # 6. Remove the address from this browser (messages are kept).
 curl -s -b "$JAR" -X DELETE "$BASE/api/inboxes/$(printf %s "$ADDR" | jq -sRr @uri)" \
@@ -575,10 +705,12 @@ curl -s -b "$JAR" -X POST $BASE/api/logout \
 | Situation | Result |
 | --- | --- |
 | Create a key | `201` with the plaintext; shown once and never again |
-| List keys | Metadata only — id, name, prefix, created, last used |
+| List keys | Metadata only — id, name, prefix, created, last used, permissions |
 | Unknown/malformed/revoked key | `401 Authentication required` |
-| Valid key on `/api/inboxes` | Works with no `x-session-id`; inboxes are per key |
-| Valid key on `/api/inbound` | Accepted, same gate as any other route |
+| Valid key on `/api/inboxes` | Works with no `x-session-id`; inboxes are per key; needs `read` |
+| Valid key on `/api/inbound` | Accepted, same gate as any other route; needs `inbound` |
+| Key without the needed permission | `403 API key lacks the "<permission>" permission` |
+| Cookie on `/api/v1/...` | `403 API key required`; `/api/v1` is key-only |
 | Key on `/api/keys` | `403`; a key cannot mint or revoke keys |
 | Successful key request | `last_used_at` updated best effort, never fatal |
 

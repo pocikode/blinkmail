@@ -30,6 +30,8 @@ var els = {
   passwordStatus: document.getElementById('passwordStatus'),
   apiKeyForm: document.getElementById('apiKeyForm'),
   apiKeyName: document.getElementById('apiKeyName'),
+  apiKeyPermInbound: document.getElementById('apiKeyPermInbound'),
+  apiKeyPermRead: document.getElementById('apiKeyPermRead'),
   apiKeyCreateBtn: document.getElementById('apiKeyCreateBtn'),
   apiKeyStatus: document.getElementById('apiKeyStatus'),
   apiKeyList: document.getElementById('apiKeyList'),
@@ -428,6 +430,9 @@ function renderApiKeys(keys) {
       ' • Created ' + formatTimestamp(key.created_at)));
     detail.appendChild(document.createTextNode(
       ' • Last used ' + (key.last_used_at ? formatTimestamp(key.last_used_at) : 'never')));
+    var perms = Array.isArray(key.permissions) ? key.permissions : [];
+    detail.appendChild(document.createTextNode(
+      ' • Permissions: ' + (perms.length ? perms.join(', ') : 'none')));
     meta.appendChild(detail);
 
     var remove = el('button', 'danger', 'Revoke');
@@ -461,14 +466,26 @@ async function submitCreateApiKey() {
     return;
   }
 
+  // The API rejects an empty permission list, so catch it here where the form
+  // can point at the checkboxes instead of round-tripping a 400.
+  var permissions = [];
+  if (els.apiKeyPermInbound.checked) permissions.push('inbound');
+  if (els.apiKeyPermRead.checked) permissions.push('read');
+  if (permissions.length === 0) {
+    showApiKeyStatus('Pick at least one permission.', true);
+    return;
+  }
+
   els.apiKeyCreateBtn.disabled = true;
   showApiKeyStatus('', false);
   try {
     var created = await fetchJson('/api/keys', {
       method: 'POST',
-      body: { name: name },
+      body: { name: name, permissions: permissions },
     });
     els.apiKeyName.value = '';
+    els.apiKeyPermInbound.checked = true;
+    els.apiKeyPermRead.checked = true;
     showCreatedApiKey(created && created.key);
     await loadApiKeys();
     showApiKeyStatus('Key created. Copy it now — it is not stored anywhere.', false);

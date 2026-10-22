@@ -82,15 +82,15 @@ func TestMigrationsAreRepeatable(t *testing.T) {
 	}
 
 	// schema_migrations must have recorded exactly one row per migration file
-	// (001_init, 002_auth, 003_api_keys), so a re-run cannot have applied
-	// anything twice.
+	// (001_init, 002_auth, 003_api_keys, 004_api_key_scopes), so a re-run cannot
+	// have applied anything twice.
 	var n int
 	if err := s.DB().QueryRowContext(context.Background(),
 		`SELECT COUNT(*) FROM schema_migrations`).Scan(&n); err != nil {
 		t.Fatalf("count migrations: %v", err)
 	}
-	if n != 3 {
-		t.Errorf("schema_migrations rows = %d, want 3", n)
+	if n != 4 {
+		t.Errorf("schema_migrations rows = %d, want 4", n)
 	}
 }
 
@@ -701,6 +701,127 @@ func TestNullDeliveryKeysDoNotCollide(t *testing.T) {
 	}
 	if len(msgs) != 3 {
 		t.Errorf("stored %d messages with NULL delivery keys, want 3", len(msgs))
+	}
+}
+
+// TestInboxSummariesAndMessagesSince covers the two /api/v1 queries: empty
+// inboxes are excluded from the summary, counts and last activity are right,
+// and the since filter compares instants rather than strings.
+func TestInboxSummariesAndMessagesSince(t *testing.T) {
+	s, _ := openTemp(t)
+	ctx := t.Context()
+
+	// An inbox with no mail must not be summarised.
+	if err := s.CreateInbox(ctx, "empty@example.com"); err != nil {
+		t.Fatalf("CreateInbox: %v", err)
+	}
+
+	deliver := func(id, addr, subject string, ts string) {
+		t.Helper()
+		if err := s.DeliverMessage(ctx, store.NewMessage{
+			ID: id, Inbox: addr, From: "a@b.com", Subject: subject, Body: "b",
+		}); err != nil {
+			t.Fatalf("DeliverMessage %s: %v", id, err)
+		}
+		if _, err := s.DB().ExecContext(ctx,
+			`UPDATE messages SET received_at = ? WHERE id = ?`, ts, id); err != nil {
+			t.Fatalf("set received_at: %v", err)
+		}
+	}
+
+	// Variable fractional digits are deliberate: a lexicographic since would
+	// order "…:02Z" after "…:02.500Z" because '.' sorts before 'Z'.
+	deliver("m1", "a@example.com", "one", "2026-01-01T00:00:01Z")
+	deliver("m2", "b@example.com", "two", "2026-01-01T00:00:02.500Z")
+	deliver("m3", "b@example.com", "three", "2026-01-01T00:00:03Z")
+
+	summaries, err := s.InboxSummaries(ctx)
+	if err != nil {
+		t.Fatalf("InboxSummaries: %v", err)
+	}
+	if len(summaries) != 2 {
+		t.Fatalf("summaries = %+v, want 2 (empty inbox excluded)", summaries)
+	}
+	if summaries[0].Address != "b@example.com" || summaries[0].MessageCount != 2 {
+		t.Errorf("first summary = %+v, want b with 2 messages", summaries[0])
+	}
+	if summaries[0].LastReceivedAt != "2026-01-01T00:00:03Z" {
+		t.Errorf("last_received_at = %q", summaries[0].LastReceivedAt)
+	}
+	if summaries[1].MessageCount != 1 || summaries[1].LastReceivedAt != "2026-01-01T00:00:01Z" {
+		t.Errorf("second summary = %+v", summaries[1])
+	}
+
+	all, err := s.MessagesSince(ctx, "b@example.com", "", 10)
+	if err != nil {
+		t.Fatalf("MessagesSince(all): %v", err)
+	}
+	if len(all) != 2 || all[0].Subject != "two" || all[1].Subject != "three" {
+		t.Errorf("MessagesSince = %+v, want two then three (oldest first)", all)
+	}
+
+	since, err := s.MessagesSince(ctx, "b@example.com", "2026-01-01T00:00:02Z", 10)
+	if err != nil {
+		t.Fatalf("MessagesSince(since): %v", err)
+	}
+	if len(since) != 2 {
+		t.Errorf("MessagesSince(02Z) = %d rows, want 2 (julianday, not string order)", len(since))
+	}
+
+	limited, err := s.MessagesSince(ctx, "b@example.com", "", 1)
+	if err != nil {
+		t.Fatalf("MessagesSince(limit): %v", err)
+	}
+	if len(limited) != 1 || limited[0].Subject != "two" {
+		t.Errorf("MessagesSince(limit 1) = %+v, want only the oldest", limited)
+	}
+
+	empty, err := s.MessagesSince(ctx, "empty@example.com", "", 10)
+	if err != nil {
+		t.Fatalf("MessagesSince(empty): %v", err)
+	}
+	if empty == nil || len(empty) != 0 {
+		t.Errorf("MessagesSince(empty) = %#v, want a non-nil empty slice", empty)
+	}
+}
+
+// TestMessagesSinceOrdersWithinTheSameSecond guards the oldest-first guarantee
+// when received_at has variable fractional digits: "…:48.500Z" is later than
+// "…:48Z" but sorts before it lexicographically, so a raw string ORDER BY would
+// return the pair backwards and a client paging with since would skip a message.
+func TestMessagesSinceOrdersWithinTheSameSecond(t *testing.T) {
+	s, _ := openTemp(t)
+	ctx := t.Context()
+
+	const addr = "samesecond@example.com"
+	// The older message deliberately has the lexicographically greater id, so a
+	// fallback id ordering cannot accidentally produce the right answer.
+	cases := []struct{ id, subject, ts string }{
+		{"zz-older", "zero-millis", "2026-01-01T00:00:48Z"},
+		{"aa-newer", "half-second", "2026-01-01T00:00:48.500Z"},
+	}
+	for _, c := range cases {
+		if err := s.DeliverMessage(ctx, store.NewMessage{
+			ID: c.id, Inbox: addr, From: "a@b.com", Subject: c.subject, Body: "b",
+		}); err != nil {
+			t.Fatalf("DeliverMessage %s: %v", c.id, err)
+		}
+		if _, err := s.DB().ExecContext(ctx,
+			`UPDATE messages SET received_at = ? WHERE id = ?`, c.ts, c.id); err != nil {
+			t.Fatalf("set received_at: %v", err)
+		}
+	}
+
+	msgs, err := s.MessagesSince(ctx, addr, "", 10)
+	if err != nil {
+		t.Fatalf("MessagesSince: %v", err)
+	}
+	if len(msgs) != 2 {
+		t.Fatalf("got %d messages, want 2", len(msgs))
+	}
+	if msgs[0].Subject != "zero-millis" || msgs[1].Subject != "half-second" {
+		t.Errorf("order = [%s %s], want [zero-millis half-second] (oldest first)",
+			msgs[0].Subject, msgs[1].Subject)
 	}
 }
 

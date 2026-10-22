@@ -92,9 +92,15 @@ func newTestEnv(t *testing.T) testEnv {
 }
 
 // createAPIKey mints a key through the API and returns its plaintext and id.
-func (e testEnv) createAPIKey(t *testing.T, name string) (key, id string) {
+// With no perms the request omits the field, so the server applies its default
+// of inbound,read; passing perms scopes the key explicitly.
+func (e testEnv) createAPIKey(t *testing.T, name string, perms ...string) (key, id string) {
 	t.Helper()
-	w := e.doRequest(http.MethodPost, "/api/keys", map[string]string{"name": name},
+	body := map[string]interface{}{"name": name}
+	if len(perms) > 0 {
+		body["permissions"] = perms
+	}
+	w := e.doRequest(http.MethodPost, "/api/keys", body,
 		map[string]string{"Content-Type": "application/json"})
 	if w.Code != http.StatusCreated {
 		t.Fatalf("create API key: %d %s", w.Code, w.Body.String())

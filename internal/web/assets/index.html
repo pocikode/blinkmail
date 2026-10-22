@@ -160,6 +160,19 @@
               placeholder="Email Worker"
               required
             />
+            <!-- Both are checked by default: a key used for both jobs is what
+                 every existing script expects, and an operator can narrow it. -->
+            <fieldset class="api-key-perms">
+              <legend class="field-label">Permissions</legend>
+              <label class="api-key-perm">
+                <input id="apiKeyPermInbound" type="checkbox" checked />
+                Deliver mail (inbound)
+              </label>
+              <label class="api-key-perm">
+                <input id="apiKeyPermRead" type="checkbox" checked />
+                Read mail (read)
+              </label>
+            </fieldset>
             <button type="submit" id="apiKeyCreateBtn">Create key</button>
             <div
               class="settings-status"

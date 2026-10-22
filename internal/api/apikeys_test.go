@@ -276,7 +276,9 @@ func TestDeletedAPIKeyStopsWorking(t *testing.T) {
 // able to mint or revoke keys.
 func TestAPIKeyCannotManageKeys(t *testing.T) {
 	e := newTestEnv(t)
-	key, id := e.createAPIKey(t, "read-only")
+	// Read-scoped on purpose: even a key that can read mail must not be able to
+	// mint or revoke keys.
+	key, id := e.createAPIKey(t, "read-only", "read")
 
 	auth := map[string]string{
 		"Authorization": "Bearer " + key,

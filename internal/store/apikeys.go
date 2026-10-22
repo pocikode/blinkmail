@@ -18,15 +18,19 @@ type APIKey struct {
 	Hash       string  `json:"-"`
 	CreatedAt  string  `json:"created_at"`
 	LastUsedAt *string `json:"last_used_at"`
+	// Permissions is the raw column value ("inbound,read"). The API layer turns
+	// it into a JSON array, so the storage format never leaks into the contract.
+	Permissions string `json:"-"`
 }
 
 // CreateAPIKey stores a new key. The caller generates the id, the display
-// prefix and the hash; the plaintext never reaches the database.
-func (s *Store) CreateAPIKey(ctx context.Context, id, name, prefix, keyHash string) error {
+// prefix and the hash; the plaintext never reaches the database. permissions is
+// inserted as-is: the store does not validate, the API layer does.
+func (s *Store) CreateAPIKey(ctx context.Context, id, name, prefix, keyHash, permissions string) error {
 	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO api_keys (id, name, prefix, key_hash, created_at)
-		VALUES (?, ?, ?, ?, ?)`,
-		id, name, prefix, keyHash, formatTime(NowUTC()),
+		INSERT INTO api_keys (id, name, prefix, key_hash, created_at, permissions)
+		VALUES (?, ?, ?, ?, ?, ?)`,
+		id, name, prefix, keyHash, formatTime(NowUTC()), permissions,
 	)
 	if err != nil {
 		return fmt.Errorf("store: create API key: %w", err)
@@ -38,7 +42,7 @@ func (s *Store) CreateAPIKey(ctx context.Context, id, name, prefix, keyHash stri
 // cannot be returned to a caller by accident.
 func (s *Store) APIKeys(ctx context.Context) ([]APIKey, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, name, prefix, created_at, last_used_at
+		SELECT id, name, prefix, created_at, last_used_at, permissions
 		FROM api_keys
 		ORDER BY created_at DESC, id ASC`)
 	if err != nil {
@@ -52,7 +56,7 @@ func (s *Store) APIKeys(ctx context.Context) ([]APIKey, error) {
 			k  APIKey
 			lu sql.NullString
 		)
-		if err := rows.Scan(&k.ID, &k.Name, &k.Prefix, &k.CreatedAt, &lu); err != nil {
+		if err := rows.Scan(&k.ID, &k.Name, &k.Prefix, &k.CreatedAt, &lu, &k.Permissions); err != nil {
 			return nil, fmt.Errorf("store: scan API key: %w", err)
 		}
 		k.LastUsedAt = nullStringPtr(lu)
@@ -88,9 +92,9 @@ func (s *Store) APIKeyByHash(ctx context.Context, keyHash string) (APIKey, error
 		lu sql.NullString
 	)
 	err := s.db.QueryRowContext(ctx, `
-		SELECT id, name, prefix, key_hash, created_at, last_used_at
+		SELECT id, name, prefix, key_hash, created_at, last_used_at, permissions
 		FROM api_keys WHERE key_hash = ?`, keyHash,
-	).Scan(&k.ID, &k.Name, &k.Prefix, &k.Hash, &k.CreatedAt, &lu)
+	).Scan(&k.ID, &k.Name, &k.Prefix, &k.Hash, &k.CreatedAt, &lu, &k.Permissions)
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
 		return APIKey{}, fmt.Errorf("%w: API key", ErrNotFound)

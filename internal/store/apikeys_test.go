@@ -26,7 +26,7 @@ func TestAPIKeyLifecycle(t *testing.T) {
 		pfx  = "bm_012345678"
 		hash = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 	)
-	if err := s.CreateAPIKey(ctx, id, name, pfx, hash); err != nil {
+	if err := s.CreateAPIKey(ctx, id, name, pfx, hash, "inbound,read"); err != nil {
 		t.Fatalf("CreateAPIKey: %v", err)
 	}
 
@@ -40,6 +40,9 @@ func TestAPIKeyLifecycle(t *testing.T) {
 	k := keys[0]
 	if k.ID != id || k.Name != name || k.Prefix != pfx {
 		t.Errorf("APIKeys[0] = %+v", k)
+	}
+	if k.Permissions != "inbound,read" {
+		t.Errorf("Permissions = %q, want inbound,read", k.Permissions)
 	}
 	if k.CreatedAt == "" {
 		t.Error("CreatedAt is empty")
@@ -61,6 +64,9 @@ func TestAPIKeyLifecycle(t *testing.T) {
 	}
 	if byHash.Hash != hash {
 		t.Errorf("APIKeyByHash hash = %q, want %q", byHash.Hash, hash)
+	}
+	if byHash.Permissions != "inbound,read" {
+		t.Errorf("APIKeyByHash permissions = %q, want inbound,read", byHash.Permissions)
 	}
 
 	if _, err := s.APIKeyByHash(ctx, "missing"); !errors.Is(err, store.ErrNotFound) {
@@ -89,16 +95,44 @@ func TestAPIKeyLifecycle(t *testing.T) {
 	}
 }
 
+// TestAPIKeyPermissionsDefaultForExistingRows verifies the migration default:
+// a row inserted without permissions (as every pre-scoping row was) reads back
+// as inbound,read rather than an empty capability set.
+func TestAPIKeyPermissionsDefaultForExistingRows(t *testing.T) {
+	s, _ := openTemp(t)
+	ctx := t.Context()
+
+	const (
+		id   = "legacy"
+		hash = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+	)
+	if _, err := s.DB().ExecContext(ctx, `
+		INSERT INTO api_keys (id, name, prefix, key_hash, created_at)
+		VALUES (?, 'legacy', 'bm_ccccccccc', ?, '2026-01-01T00:00:00Z')`,
+		id, hash,
+	); err != nil {
+		t.Fatalf("insert legacy row: %v", err)
+	}
+
+	k, err := s.APIKeyByHash(ctx, hash)
+	if err != nil {
+		t.Fatalf("APIKeyByHash: %v", err)
+	}
+	if k.Permissions != "inbound,read" {
+		t.Errorf("permissions = %q, want the migration default inbound,read", k.Permissions)
+	}
+}
+
 // TestAPIKeyHashIsUnique verifies the UNIQUE constraint the lookup relies on.
 func TestAPIKeyHashIsUnique(t *testing.T) {
 	s, _ := openTemp(t)
 	ctx := t.Context()
 
 	const hash = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-	if err := s.CreateAPIKey(ctx, "one", "first", "bm_aaaaaaaaa", hash); err != nil {
+	if err := s.CreateAPIKey(ctx, "one", "first", "bm_aaaaaaaaa", hash, "inbound,read"); err != nil {
 		t.Fatalf("first CreateAPIKey: %v", err)
 	}
-	if err := s.CreateAPIKey(ctx, "two", "second", "bm_bbbbbbbbb", hash); err == nil {
+	if err := s.CreateAPIKey(ctx, "two", "second", "bm_bbbbbbbbb", hash, "inbound,read"); err == nil {
 		t.Error("a duplicate key_hash was accepted")
 	}
 }

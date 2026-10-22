@@ -64,14 +64,27 @@ const (
 // sessionID is the browser login session for cookie callers. For API-key
 // callers it is the synthetic, stable inbox session derived from the key
 // (apiKeySessionID), so an API client never has to juggle x-session-id.
+//
+// permissions is the key's canonical set ("inbound,read"); it is empty for a
+// cookie caller, which holds every permission implicitly.
 type principal struct {
-	method    authMethod
-	sessionID string
+	method      authMethod
+	sessionID   string
+	permissions string
 }
 
 // allowsManagement reports whether this caller may manage API keys. Only a
 // browser login counts: a key must not be able to mint or revoke keys.
 func (p principal) allowsManagement() bool { return p.method == authCookie }
+
+// can reports whether this caller holds permission want. A browser login holds
+// every permission: scoping exists to limit API keys, not the UI.
+func (p principal) can(want string) bool {
+	if p.method == authCookie {
+		return true
+	}
+	return hasPermission(p.permissions, want)
+}
 
 type principalKey struct{}
 
@@ -133,7 +146,11 @@ func (s *Server) authenticateAPIKey(r *http.Request, header string) (principal, 
 		s.log.Debug("could not update API key last_used_at", "key_id", stored.ID, "error", err)
 	}
 
-	return principal{method: authAPIKey, sessionID: apiKeySessionID(stored.ID)}, true, nil
+	return principal{
+		method:      authAPIKey,
+		sessionID:   apiKeySessionID(stored.ID),
+		permissions: stored.Permissions,
+	}, true, nil
 }
 
 // authenticateCookie validates the browser login cookie.
@@ -174,7 +191,11 @@ func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 // gate authenticates and then calls next. enforceJSON carries the CSRF rule;
 // the inbound route turns it off because it legitimately carries
 // message/rfc822, which a cross-site form cannot set either.
-func (s *Server) gate(enforceJSON bool, next http.HandlerFunc) http.HandlerFunc {
+//
+// Any checks run after authentication and before the handler: a caller must not
+// learn anything about its permissions before proving who it is. A check that
+// returns false has already written its own response.
+func (s *Server) gate(enforceJSON bool, next http.HandlerFunc, checks ...func(http.ResponseWriter, *http.Request, principal) bool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if enforceJSON && !requireJSONContentType(w, r) {
 			return
@@ -193,8 +214,36 @@ func (s *Server) gate(enforceJSON bool, next http.HandlerFunc) http.HandlerFunc 
 			return
 		}
 
+		for _, check := range checks {
+			if !check(w, r, p) {
+				return
+			}
+		}
+
 		next(w, r.WithContext(withPrincipal(r.Context(), p)))
 	}
+}
+
+// requirePermission refuses an API key that does not hold want. A cookie caller
+// passes: the web UI is not scoped, only keys are.
+func requirePermission(want string) func(http.ResponseWriter, *http.Request, principal) bool {
+	return func(w http.ResponseWriter, r *http.Request, p principal) bool {
+		if p.can(want) {
+			return true
+		}
+		writeError(w, http.StatusForbidden, fmt.Sprintf("API key lacks the %q permission", want))
+		return false
+	}
+}
+
+// requireAPIKeyCredential refuses a browser login on /api/v1/. The integration
+// contract is key-based: a cookie caller there is a UI bug, not a client.
+func requireAPIKeyCredential(w http.ResponseWriter, r *http.Request, p principal) bool {
+	if p.method == authAPIKey {
+		return true
+	}
+	writeError(w, http.StatusForbidden, "API key required")
+	return false
 }
 
 // requireJSONContentType enforces the CSRF rule for methods that change state.
