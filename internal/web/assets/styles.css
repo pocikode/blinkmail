@@ -202,7 +202,7 @@ select {
   font-size: 13px;
   color: var(--ink);
   background: var(--bg);
-  border: 1px solid var(--line-2);
+  border: 1px solid #565d68;
   border-radius: var(--radius-sm);
   padding: 9px 11px;
   width: 100%;
@@ -215,7 +215,7 @@ input::placeholder {
 
 input:hover,
 select:hover {
-  border-color: #34383f;
+  border-color: #5b626d;
 }
 
 input:focus,
@@ -281,7 +281,7 @@ code {
 .login-sub {
   font-family: var(--mono);
   font-size: 11.5px;
-  color: var(--ink-3);
+  color: var(--ink-2);
   margin: 6px 0 26px;
 }
 
@@ -324,8 +324,8 @@ code {
   margin-top: 22px;
   font-size: 11.5px;
   line-height: 1.6;
-  color: var(--ink-3);
-  max-width: 300px;
+  color: var(--ink-2);
+  max-width: 36ch;
 }
 
 /* --------------------------------- Shell ----------------------------------- */
