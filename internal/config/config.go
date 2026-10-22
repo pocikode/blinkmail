@@ -22,7 +22,7 @@ import (
 const (
 	DefaultListenAddr = ":8080"
 	DefaultDataDir    = "/data"
-	DefaultAppName    = "Blinkmail"
+	DefaultAppName    = "BlinkMail"
 )
 
 // Config holds all validated runtime settings.

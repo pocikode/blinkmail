@@ -325,7 +325,8 @@ code {
   font-size: 11.5px;
   line-height: 1.6;
   color: var(--ink-2);
-  max-width: 36ch;
+  /* Break between sentences rather than leaving one word on its own line. */
+  text-wrap: pretty;
 }
 
 /* --------------------------------- Shell ----------------------------------- */

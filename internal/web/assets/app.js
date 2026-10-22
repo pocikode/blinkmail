@@ -62,7 +62,7 @@ var els = {
 };
 
 var appConfig = {
-  appName: 'Blinkmail',
+  appName: 'BlinkMail',
   mailDomain: 'example.com',
   mailDomains: ['example.com'],
 };
@@ -194,7 +194,7 @@ async function fetchJson(url, options) {
       body: opts.body === undefined ? undefined : JSON.stringify(opts.body),
     });
   } catch (networkErr) {
-    throw ApiError('Cannot reach the Blinkmail server. Check your connection.', 0);
+    throw ApiError('Cannot reach the BlinkMail server. Check your connection.', 0);
   }
 
   var payload = null;
@@ -987,7 +987,7 @@ async function boot() {
     // rather than a blank page.
     els.loginView.hidden = false;
     els.appView.hidden = true;
-    showLoginError((err && err.message) || 'Could not reach the Blinkmail server.');
+    showLoginError((err && err.message) || 'Could not reach the BlinkMail server.');
     els.passwordInput.focus();
     return;
   }
@@ -1008,12 +1008,12 @@ async function startApp() {
     await loadInboxes();
     setInboxControlsEnabled(Boolean(els.inboxSelect.value));
   } catch (err) {
-    handleError(err, 'Could not load Blinkmail.');
+    handleError(err, 'Could not load BlinkMail.');
     // A 401 has already swapped in the login view; there is no app shell left to
     // fill with an empty state.
     if (!authState) return;
     showEmptyState('⚠️', 'Connection error',
-      'Could not reach the Blinkmail server. Reload the page to try again.');
+      'Could not reach the BlinkMail server. Reload the page to try again.');
     els.currentInbox.textContent = 'No inbox selected';
     els.messageCount.textContent = '0 messages';
   } finally {
