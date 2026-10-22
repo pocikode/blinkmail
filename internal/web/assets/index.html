@@ -9,7 +9,7 @@
     <link
       rel="icon"
       type="image/svg+xml"
-      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0%25' y1='0%25' x2='100%25' y2='100%25'%3E%3Cstop offset='0%25' style='stop-color:%238185f8'/%3E%3Cstop offset='100%25' style='stop-color:%236366f1'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect width='64' height='64' rx='16' fill='url(%23g)'/%3E%3Ctext x='32' y='46' font-family='sans-serif' font-size='34' font-weight='700' fill='white' text-anchor='middle'%3EB%3C/text%3E%3C/svg%3E"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='16' fill='%23ff6b3d'/%3E%3Crect x='15' y='19' width='34' height='26' rx='4' fill='none' stroke='%23120a06' stroke-width='4'/%3E%3Cpath d='M17 24l15 11 15-11' fill='none' stroke='%23120a06' stroke-width='4' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E"
     />
     <link rel="stylesheet" href="/styles.css" />
   </head>
@@ -20,255 +20,290 @@
       sees the app shell and the client never calls the inbox endpoints.
     -->
     <main class="login-view" id="loginView" hidden>
-      <form class="login-card" id="loginForm" novalidate>
-        <h1 id="loginTitle">Blinkmail</h1>
-        <p class="login-sub">Sign in to read your disposable inbox.</p>
+      <div class="login-shell">
+        <div class="login-brand">
+          <span class="mark" aria-hidden="true"></span>
+          <span>Blinkmail</span>
+        </div>
 
-        <label class="field-label" for="passwordInput">Password</label>
-        <input
-          id="passwordInput"
-          name="password"
-          type="password"
-          autocomplete="current-password"
-          spellcheck="false"
-          aria-describedby="loginError"
-          required
-        />
+        <h1 class="login-title">Disposable inbox</h1>
+        <p class="login-sub" id="loginDomain">mail.pocikode.tech</p>
 
-        <button type="submit" id="loginBtn">Sign in</button>
+        <form class="login-card" id="loginForm" novalidate>
+          <label class="field-label" for="passwordInput">Password</label>
+          <input
+            id="passwordInput"
+            name="password"
+            type="password"
+            autocomplete="current-password"
+            spellcheck="false"
+            aria-describedby="loginError"
+            required
+          />
 
-        <!-- Server text is written with textContent, never as markup. -->
-        <div class="login-error" id="loginError" role="alert" hidden></div>
-      </form>
+          <button type="submit" id="loginBtn" class="btn btn-primary btn-block">
+            Sign in
+          </button>
+
+          <!-- Server text is written with textContent, never as markup. -->
+          <div class="login-error" id="loginError" role="alert" hidden></div>
+        </form>
+
+        <p class="login-foot">
+          Addresses are public. Anyone who knows one can read its mail.
+        </p>
+      </div>
     </main>
 
     <div class="app" id="appView" hidden>
-      <header>
-        <div class="header-row">
-          <h1 id="appTitle">Blinkmail</h1>
-          <button
-            type="button"
-            id="settingsBtn"
-            class="ghost-btn"
-            aria-expanded="false"
-            aria-controls="settingsPanel"
-          >
-            ⚙ Settings
-          </button>
+      <header class="topbar">
+        <div class="brand">
+          <span class="mark" aria-hidden="true"></span>
+          <h1 class="brand-name" id="appTitle">Blinkmail</h1>
         </div>
-        <p id="appSubtitle">Disposable inbox</p>
+        <p class="brand-sub" id="appSubtitle">mail.pocikode.tech</p>
+        <button
+          type="button"
+          id="settingsBtn"
+          class="btn btn-quiet btn-sm"
+          aria-expanded="false"
+          aria-controls="settingsPanel"
+        >
+          Settings
+        </button>
       </header>
 
-      <!-- Account and security controls. Hidden until opened from the header. -->
-      <section
-        class="settings-panel"
-        id="settingsPanel"
-        aria-labelledby="settingsHeading"
-        hidden
-      >
-        <h2 id="settingsHeading">Settings</h2>
-
-        <div class="settings-group">
-          <h3>Session</h3>
-          <p class="settings-hint">
-            Signing out ends this browser's session. Your inboxes stay on the
-            server and remain readable by anyone who knows their addresses.
-          </p>
-          <button type="button" id="logoutBtn" class="danger">
-            Sign out
-          </button>
-        </div>
-
-        <div class="settings-group">
-          <h3>Change password</h3>
-          <form id="passwordForm" novalidate>
-            <label class="field-label" for="currentPasswordInput"
-              >Current password</label
+      <div class="workspace">
+        <aside class="sidebar">
+          <div class="sidebar-head">
+            <h2 class="section-label">Inboxes</h2>
+            <button
+              type="button"
+              id="newBtn"
+              class="btn btn-primary btn-sm"
+              aria-expanded="false"
+              aria-controls="newBox"
             >
-            <input
-              id="currentPasswordInput"
-              type="password"
-              autocomplete="current-password"
-              spellcheck="false"
-              required
-            />
-
-            <label class="field-label" for="newPasswordInput"
-              >New password</label
-            >
-            <input
-              id="newPasswordInput"
-              type="password"
-              autocomplete="new-password"
-              spellcheck="false"
-              aria-describedby="passwordHint"
-              minlength="8"
-              required
-            />
-            <p class="settings-hint" id="passwordHint">
-              At least 8 characters. Changing it signs out every other browser.
-            </p>
-
-            <button type="submit" id="passwordSubmitBtn">
-              Update password
+              New
             </button>
-            <div
-              class="settings-status"
-              id="passwordStatus"
-              role="status"
-              aria-live="polite"
-            ></div>
-          </form>
-        </div>
-
-        <div class="settings-group" id="apiKeysSection">
-          <h3>API keys</h3>
-          <p class="settings-hint">
-            Keys authenticate API clients and the Cloudflare Email Worker with
-            <code>Authorization: Bearer &lt;key&gt;</code>. A key cannot sign in
-            here or create other keys. Revoke one as soon as it is no longer
-            needed.
-          </p>
-
-          <!-- One-time reveal. The key is written with textContent and lives in
-               a read-only field so it can be selected and copied. -->
-          <div class="api-key-reveal" id="apiKeyReveal" hidden>
-            <p class="api-key-warning" id="apiKeyWarning">
-              Copy this key now — it will never be shown again.
-            </p>
-            <div class="api-key-copy-row">
-              <label class="visually-hidden" for="apiKeyValue">New API key</label>
-              <input
-                id="apiKeyValue"
-                type="text"
-                readonly
-                spellcheck="false"
-                autocomplete="off"
-              />
-              <button type="button" id="apiKeyCopyBtn">📋 Copy</button>
-            </div>
           </div>
 
-          <form id="apiKeyForm" novalidate>
-            <label class="field-label" for="apiKeyName">New key name</label>
+          <section class="new-box hidden" id="newBox" aria-label="Create an address">
+            <label class="visually-hidden" for="localPartInput">
+              Custom username, or leave blank for a random address
+            </label>
             <input
-              id="apiKeyName"
+              id="localPartInput"
               type="text"
               autocomplete="off"
               spellcheck="false"
               maxlength="64"
-              placeholder="Email Worker"
-              required
+              aria-describedby="localPartHint"
+              placeholder="username"
             />
-            <!-- Both are checked by default: a key used for both jobs is what
-                 every existing script expects, and an operator can narrow it. -->
-            <fieldset class="api-key-perms">
-              <legend class="field-label">Permissions</legend>
-              <label class="api-key-perm">
-                <input id="apiKeyPermInbound" type="checkbox" checked />
-                Deliver mail (inbound)
-              </label>
-              <label class="api-key-perm">
-                <input id="apiKeyPermRead" type="checkbox" checked />
-                Read mail (read)
-              </label>
-            </fieldset>
-            <button type="submit" id="apiKeyCreateBtn">Create key</button>
-            <div
-              class="settings-status"
-              id="apiKeyStatus"
-              role="status"
-              aria-live="polite"
-            ></div>
-          </form>
 
-          <div class="api-key-list" id="apiKeyList"></div>
-        </div>
-      </section>
+            <div class="new-box-row">
+              <label class="visually-hidden" for="domainSelect">Mail domain</label>
+              <select id="domainSelect"></select>
+              <button type="button" id="createCustomBtn" class="btn btn-sm">
+                Create
+              </button>
+              <button type="button" id="createRandomBtn" class="btn btn-sm">
+                Random
+              </button>
+            </div>
 
-      <!-- Every address on this service is public. Say so up front. -->
-      <section class="notice" aria-labelledby="noticeHeading">
-        <strong id="noticeHeading">Addresses are public.</strong>
-        Anyone who knows an address can read every message in it. Do not use a
-        Blinkmail address for passwords, banking, or anything private. Removing
-        an address hides it from this browser only — it does not delete the
-        messages.
-      </section>
+            <p class="visually-hidden" id="localPartHint">
+              Letters, digits, dot, underscore, hyphen and plus are allowed, up
+              to 64 characters. An address that already exists will be added to
+              your list, including its existing messages, because addresses are
+              public.
+            </p>
+          </section>
 
-      <!-- Failures are shown here as text, never interpolated into markup. -->
-      <div
-        class="error-banner"
-        id="errorBanner"
-        role="alert"
-        aria-live="assertive"
-        hidden
-      >
-        <span id="errorText"></span>
-        <button type="button" id="errorDismiss" aria-label="Dismiss error">
-          &#215;
+          <!-- Rendered by renderInboxList(). #inboxSelect stays in the DOM,
+               hidden, as the single source of truth for the current address:
+               every action reads .value from it, so adding a second, visible
+               selection state would let the two disagree. -->
+          <div class="inbox-list" id="inboxList"></div>
+
+          <!-- Hidden from assistive tech too: the list above is the control,
+               and two focusable copies of one setting is a trap. -->
+          <select id="inboxSelect" class="select-proxy" tabindex="-1" aria-hidden="true"></select>
+
+          <p class="sidebar-note">
+            <strong>Public by design.</strong> Anyone who knows an address can
+            read its mail. Never use one for passwords or banking.
+          </p>
+        </aside>
+
+        <main class="reader">
+          <div class="reader-head">
+            <div class="reader-id">
+              <h1 id="currentInbox">No inbox selected</h1>
+              <span id="messageCount" class="count" aria-live="polite">0 messages</span>
+            </div>
+
+            <div class="reader-actions" role="group" aria-label="Inbox controls">
+              <button type="button" id="copyBtn" class="btn btn-sm">Copy</button>
+              <button type="button" id="refreshBtn" class="btn btn-sm">Refresh</button>
+              <button type="button" id="deleteBtn" class="btn btn-sm btn-danger">
+                Delete
+              </button>
+            </div>
+          </div>
+
+          <!-- Failures are shown here as text, never interpolated into markup. -->
+          <div
+            class="error-banner"
+            id="errorBanner"
+            role="alert"
+            aria-live="assertive"
+            hidden
+          >
+            <span id="errorText"></span>
+            <button type="button" id="errorDismiss" aria-label="Dismiss error">
+              &#215;
+            </button>
+          </div>
+
+          <div id="messageList" class="message-list" aria-label="Messages"></div>
+        </main>
+      </div>
+    </div>
+
+    <!-- Account and security controls. Hidden until opened from the header. -->
+    <div class="drawer-backdrop" id="settingsBackdrop" hidden></div>
+
+    <section
+      class="settings-panel"
+      id="settingsPanel"
+      aria-labelledby="settingsHeading"
+      tabindex="-1"
+      hidden
+    >
+      <div class="drawer-head">
+        <h2 id="settingsHeading">Settings</h2>
+        <button type="button" id="settingsClose" class="btn btn-quiet btn-sm">
+          Close
         </button>
       </div>
 
-      <section class="toolbar" aria-label="Inbox controls">
-        <label class="visually-hidden" for="inboxSelect"
-          >Select inbox address</label
-        >
-        <select id="inboxSelect" aria-describedby="currentInbox"></select>
-        <button type="button" id="copyBtn">📋 Copy</button>
-        <button type="button" id="refreshBtn">🔄 Refresh</button>
-        <button
-          type="button"
-          id="newBtn"
-          aria-expanded="false"
-          aria-controls="newBox"
-        >
-          ＋ New
-        </button>
-        <button type="button" id="deleteBtn" class="danger">🗑 Delete</button>
-      </section>
-
-      <section class="new-box hidden" id="newBox" aria-label="Create an address">
-        <label class="visually-hidden" for="localPartInput">
-          Custom username, or leave blank for a random address
-        </label>
-        <input
-          id="localPartInput"
-          type="text"
-          autocomplete="off"
-          spellcheck="false"
-          maxlength="64"
-          aria-describedby="localPartHint"
-          placeholder="username, or blank for random"
-        />
-        <label class="visually-hidden" for="domainSelect">Mail domain</label>
-        <select id="domainSelect"></select>
-        <button type="button" id="createCustomBtn">✦ Create</button>
-        <button type="button" id="createRandomBtn">🎲 Random</button>
-        <p class="visually-hidden" id="localPartHint">
-          Letters, digits, dot, underscore, hyphen and plus are allowed, up to
-          64 characters. An address that already exists will be added to your
-          list, including its existing messages, because addresses are public.
+      <div class="settings-group">
+        <h3 class="section-label">Session</h3>
+        <p class="settings-hint">
+          Signing out ends this browser's session. Your inboxes stay on the
+          server and remain readable by anyone who knows their addresses.
         </p>
-      </section>
+        <button type="button" id="logoutBtn" class="btn btn-danger btn-sm">
+          Sign out
+        </button>
+      </div>
 
-      <section class="panel" aria-label="Messages">
-        <div class="panel-head">
-          <h2 id="currentInbox">No inbox selected</h2>
-          <span id="messageCount" aria-live="polite">0 messages</span>
+      <div class="settings-group">
+        <h3 class="section-label">Change password</h3>
+        <form id="passwordForm" novalidate>
+          <label class="field-label" for="currentPasswordInput">Current password</label>
+          <input
+            id="currentPasswordInput"
+            type="password"
+            autocomplete="current-password"
+            spellcheck="false"
+            required
+          />
+
+          <label class="field-label" for="newPasswordInput">New password</label>
+          <input
+            id="newPasswordInput"
+            type="password"
+            autocomplete="new-password"
+            spellcheck="false"
+            aria-describedby="passwordHint"
+            minlength="8"
+            required
+          />
+          <p class="settings-hint" id="passwordHint">
+            At least 8 characters. Changing it signs out every other browser.
+          </p>
+
+          <button type="submit" id="passwordSubmitBtn" class="btn btn-primary btn-sm">
+            Update password
+          </button>
+          <div
+            class="settings-status"
+            id="passwordStatus"
+            role="status"
+            aria-live="polite"
+          ></div>
+        </form>
+      </div>
+
+      <div class="settings-group" id="apiKeysSection">
+        <h3 class="section-label">API keys</h3>
+        <p class="settings-hint">
+          Keys authenticate API clients and the Cloudflare Email Worker with
+          <code>Authorization: Bearer &lt;key&gt;</code>. A key cannot sign in
+          here or create other keys. Revoke one as soon as it is no longer
+          needed.
+        </p>
+
+        <!-- One-time reveal. The key is written with textContent and lives in
+             a read-only field so it can be selected and copied. -->
+        <div class="api-key-reveal" id="apiKeyReveal" hidden>
+          <p class="api-key-warning" id="apiKeyWarning">
+            Copy this key now — it will never be shown again.
+          </p>
+          <div class="api-key-copy-row">
+            <label class="visually-hidden" for="apiKeyValue">New API key</label>
+            <input
+              id="apiKeyValue"
+              type="text"
+              readonly
+              spellcheck="false"
+              autocomplete="off"
+            />
+            <button type="button" id="apiKeyCopyBtn" class="btn btn-sm">Copy</button>
+          </div>
         </div>
-        <div id="messageList" class="message-list"></div>
-      </section>
 
-      <footer>
-        <a
-          href="https://github.com/pocikode/blinkmail"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          Blinkmail <span>disposable mail</span>
-        </a>
-      </footer>
-    </div>
+        <form id="apiKeyForm" novalidate>
+          <label class="field-label" for="apiKeyName">New key name</label>
+          <input
+            id="apiKeyName"
+            type="text"
+            autocomplete="off"
+            spellcheck="false"
+            maxlength="64"
+            placeholder="Email Worker"
+            required
+          />
+          <!-- Both are checked by default: a key used for both jobs is what
+               every existing script expects, and an operator can narrow it. -->
+          <fieldset class="api-key-perms">
+            <legend class="field-label">Permissions</legend>
+            <label class="api-key-perm">
+              <input id="apiKeyPermInbound" type="checkbox" checked />
+              Deliver mail (inbound)
+            </label>
+            <label class="api-key-perm">
+              <input id="apiKeyPermRead" type="checkbox" checked />
+              Read mail (read)
+            </label>
+          </fieldset>
+          <button type="submit" id="apiKeyCreateBtn" class="btn btn-primary btn-sm">
+            Create key
+          </button>
+          <div
+            class="settings-status"
+            id="apiKeyStatus"
+            role="status"
+            aria-live="polite"
+          ></div>
+        </form>
+
+        <div class="api-key-list" id="apiKeyList"></div>
+      </div>
+    </section>
 
     <div class="toast-container" id="toastContainer" aria-live="polite"></div>
 

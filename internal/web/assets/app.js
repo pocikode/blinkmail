@@ -17,11 +17,14 @@ var els = {
   passwordInput: document.getElementById('passwordInput'),
   loginBtn: document.getElementById('loginBtn'),
   loginError: document.getElementById('loginError'),
+  loginDomain: document.getElementById('loginDomain'),
   appView: document.getElementById('appView'),
   appTitle: document.getElementById('appTitle'),
   appSubtitle: document.getElementById('appSubtitle'),
   settingsBtn: document.getElementById('settingsBtn'),
   settingsPanel: document.getElementById('settingsPanel'),
+  settingsBackdrop: document.getElementById('settingsBackdrop'),
+  settingsClose: document.getElementById('settingsClose'),
   logoutBtn: document.getElementById('logoutBtn'),
   passwordForm: document.getElementById('passwordForm'),
   currentPasswordInput: document.getElementById('currentPasswordInput'),
@@ -39,6 +42,7 @@ var els = {
   apiKeyValue: document.getElementById('apiKeyValue'),
   apiKeyCopyBtn: document.getElementById('apiKeyCopyBtn'),
   inboxSelect: document.getElementById('inboxSelect'),
+  inboxList: document.getElementById('inboxList'),
   copyBtn: document.getElementById('copyBtn'),
   refreshBtn: document.getElementById('refreshBtn'),
   newBtn: document.getElementById('newBtn'),
@@ -268,6 +272,7 @@ function showLoginView(message) {
   authState = false;
   els.appView.hidden = true;
   els.settingsPanel.hidden = true;
+  els.settingsBackdrop.hidden = true;
   els.settingsBtn.setAttribute('aria-expanded', 'false');
   // Never leave a revealed plaintext key on screen after signing out.
   els.apiKeyReveal.hidden = true;
@@ -379,22 +384,39 @@ async function submitPasswordChange() {
   }
 }
 
-// toggleSettings shows or hides the settings panel.
+// openSettings shows the drawer over the app. The backdrop is a separate node
+// so the panel can animate independently and clicks outside it are easy to
+// distinguish from clicks inside it.
+function openSettings() {
+  els.settingsPanel.hidden = false;
+  els.settingsBackdrop.hidden = false;
+  els.settingsBtn.setAttribute('aria-expanded', 'true');
+  // Focus the drawer itself, not a button inside it: the first Tab then lands
+  // on Close, and a mouse user does not get a focus ring on a button they did
+  // not press.
+  els.settingsPanel.focus();
+  // Key metadata is only loaded when the panel is opened, so a browser that
+  // never visits settings makes no extra requests.
+  loadApiKeys().catch(function (err) {
+    showApiKeyStatus((err && err.message) || 'Could not load API keys.', true);
+  });
+}
+
+function closeSettings() {
+  els.settingsPanel.hidden = true;
+  els.settingsBackdrop.hidden = true;
+  els.settingsBtn.setAttribute('aria-expanded', 'false');
+  // Closing drops the one-time plaintext from the DOM.
+  els.apiKeyReveal.hidden = true;
+  els.apiKeyValue.value = '';
+  els.settingsBtn.focus();
+}
+
 function toggleSettings() {
-  var hidden = els.settingsPanel.hidden;
-  els.settingsPanel.hidden = !hidden;
-  els.settingsBtn.setAttribute('aria-expanded', hidden ? 'true' : 'false');
-  if (hidden) {
-    els.currentPasswordInput.focus();
-    // Key metadata is only loaded when the panel is opened, so a browser that
-    // never visits settings makes no extra requests.
-    loadApiKeys().catch(function (err) {
-      showApiKeyStatus((err && err.message) || 'Could not load API keys.', true);
-    });
+  if (els.settingsPanel.hidden) {
+    openSettings();
   } else {
-    // Closing the panel drops the one-time plaintext from the DOM.
-    els.apiKeyReveal.hidden = true;
-    els.apiKeyValue.value = '';
+    closeSettings();
   }
 }
 
@@ -560,7 +582,8 @@ async function loadConfig() {
 
   document.title = appConfig.appName;
   els.appTitle.textContent = appConfig.appName;
-  els.appSubtitle.textContent = 'Disposable inbox for ' + appConfig.mailDomain;
+  els.appSubtitle.textContent = appConfig.mailDomain;
+  els.loginDomain.textContent = appConfig.mailDomain;
 
   clear(els.domainSelect);
   appConfig.mailDomains.forEach(function (domain) {
@@ -571,8 +594,7 @@ async function loadConfig() {
   // With a single domain there is nothing to choose.
   els.domainSelect.style.display = appConfig.mailDomains.length <= 1 ? 'none' : '';
 
-  els.localPartInput.placeholder =
-    'username, or blank for random @' + appConfig.mailDomain;
+  els.localPartInput.placeholder = 'username, or blank for random';
 }
 
 // ---- Inboxes ---------------------------------------------------------------
@@ -587,10 +609,11 @@ async function loadInboxes(selectedAddress) {
     var none = el('option', null, 'No inboxes yet');
     none.value = '';
     els.inboxSelect.appendChild(none);
+    renderInboxList([]);
     els.currentInbox.textContent = 'No inbox selected';
     els.messageCount.textContent = '0 messages';
-    showEmptyState('📬', 'No inboxes yet',
-      'Click New to create a disposable email address.');
+    showEmptyState('✉', 'No inboxes yet',
+      'Create a disposable address to start receiving mail.');
     setInboxControlsEnabled(false);
     return;
   }
@@ -606,8 +629,60 @@ async function loadInboxes(selectedAddress) {
     ? selectedAddress
     : addresses[0];
 
+  renderInboxList(addresses);
   setInboxControlsEnabled(true);
   await loadMessages();
+}
+
+// renderInboxList draws the sidebar list. Clicking a row sets the hidden
+// select and reloads, so the select stays the only source of truth for which
+// address is current — the list is presentation, not state.
+function renderInboxList(addresses) {
+  clear(els.inboxList);
+
+  if (addresses.length === 0) {
+    els.inboxList.appendChild(el('p', 'inbox-empty',
+      'No addresses yet. Create one with New.'));
+    return;
+  }
+
+  addresses.forEach(function (address) {
+    var row = el('button', 'inbox-item');
+    row.type = 'button';
+    row.setAttribute('data-address', address);
+
+    // Split at the last @ so only the local part can truncate: the domain is
+    // the part a reader uses to recognise the address, so it is never cut.
+    var at = address.lastIndexOf('@');
+    var label = el('span', 'inbox-address');
+    label.appendChild(el('span', 'inbox-local', at > 0 ? address.slice(0, at) : address));
+    if (at > 0) label.appendChild(el('span', 'inbox-domain', address.slice(at)));
+    row.appendChild(label);
+
+    if (address === els.inboxSelect.value) row.setAttribute('aria-current', 'true');
+    row.addEventListener('click', function () {
+      if (els.inboxSelect.value === address) return;
+      els.inboxSelect.value = address;
+      clearError();
+      loadMessages().catch(function (err) { handleError(err, 'Could not load messages.'); });
+    });
+
+    els.inboxList.appendChild(row);
+  });
+}
+
+// syncActiveInbox moves the aria-current marker without re-rendering the list,
+// which would otherwise rebuild (and re-announce) every row on each change.
+function syncActiveInbox(address) {
+  var rows = els.inboxList.querySelectorAll('.inbox-item');
+  for (var i = 0; i < rows.length; i++) {
+    var isCurrent = rows[i].getAttribute('data-address') === address;
+    if (isCurrent) {
+      rows[i].setAttribute('aria-current', 'true');
+    } else {
+      rows[i].removeAttribute('aria-current');
+    }
+  }
 }
 
 function setInboxControlsEnabled(enabled) {
@@ -626,6 +701,7 @@ async function loadMessages() {
   }
 
   els.currentInbox.textContent = address;
+  syncActiveInbox(address);
   els.messageList.setAttribute('aria-busy', 'true');
 
   try {
@@ -644,29 +720,73 @@ async function loadMessages() {
 // assigned to textContent. HTML in a body therefore displays as literal text
 // instead of being parsed — that is the intended rendering for HTML-only mail.
 function renderMessages(messages) {
-  els.messageCount.textContent = messages.length + ' messages';
+  els.messageCount.textContent = messages.length +
+    (messages.length === 1 ? ' message' : ' messages');
   clear(els.messageList);
 
   if (messages.length === 0) {
-    showEmptyState('✉️', 'Inbox empty',
-      'Emails sent to this address will appear here. Click Refresh after sending.');
+    showEmptyState('✉', 'Inbox empty',
+      'Mail sent to this address lands here. Refresh after sending.');
     return;
   }
 
   messages.forEach(function (msg) {
-    var item = el('div', 'message-item');
+    var item = el('article', 'message-item');
+    // Rows expand in place rather than opening a route: there is no history to
+    // preserve, and the full body is already in the DOM.
+    item.setAttribute('tabindex', '0');
+    item.setAttribute('role', 'button');
+    item.setAttribute('aria-expanded', 'false');
 
-    var meta = el('div', 'message-meta');
-    meta.appendChild(document.createTextNode('From: ' + (msg.from_address || 'unknown')));
-    meta.appendChild(document.createTextNode(' • '));
-    meta.appendChild(document.createTextNode(formatTimestamp(msg.received_at)));
+    var top = el('div', 'message-top');
+    top.appendChild(el('span',
+      'message-from' + (msg.from_address ? '' : ' is-empty'),
+      msg.from_address || 'unknown sender'));
+    top.appendChild(el('time', 'message-time', formatListTime(msg.received_at)));
 
-    item.appendChild(meta);
-    item.appendChild(el('strong', null, msg.subject || '(no subject)'));
-    item.appendChild(el('p', null, msg.body === undefined || msg.body === null ? '' : msg.body));
+    var subject = el('h3',
+      'message-subject' + (msg.subject ? '' : ' is-empty'),
+      msg.subject || '(no subject)');
+    var body = el('p', 'message-body',
+      msg.body === undefined || msg.body === null ? '' : String(msg.body).trim());
+
+    item.appendChild(top);
+    item.appendChild(subject);
+    item.appendChild(body);
+
+    item.addEventListener('click', function () { toggleMessage(item); });
+    item.addEventListener('keydown', function (event) {
+      if (event.key !== 'Enter' && event.key !== ' ') return;
+      event.preventDefault();
+      toggleMessage(item);
+    });
 
     els.messageList.appendChild(item);
   });
+}
+
+// toggleMessage expands one message. Collapsed bodies are clamped by CSS, so
+// the text is always present for search, copy and screen readers.
+function toggleMessage(item) {
+  var open = item.classList.toggle('is-open');
+  item.setAttribute('aria-expanded', open ? 'true' : 'false');
+}
+
+// formatListTime keeps the list column narrow: the time for today, the word
+// for yesterday, the date for anything older.
+function formatListTime(value) {
+  if (!value) return '';
+  var date = new Date(value);
+  if (Number.isNaN(date.getTime())) return String(value);
+
+  var now = new Date();
+  var startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  var t = date.getTime();
+  if (t >= startOfToday.getTime()) {
+    return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  }
+  if (t >= startOfToday.getTime() - 86400000) return 'Yesterday';
+  return date.toLocaleDateString([], { day: '2-digit', month: 'short' });
 }
 
 // formatTimestamp renders a stored RFC 3339 UTC timestamp in local time.
@@ -800,6 +920,12 @@ function init() {
   });
 
   bind('settingsBtn', async function () { toggleSettings(); });
+  bind('settingsClose', async function () { closeSettings(); });
+  els.settingsBackdrop.addEventListener('click', closeSettings);
+  // Escape closes the drawer from anywhere inside it.
+  document.addEventListener('keydown', function (event) {
+    if (event.key === 'Escape' && !els.settingsPanel.hidden) closeSettings();
+  });
   bind('logoutBtn', submitLogout);
   els.passwordForm.addEventListener('submit', function (event) {
     event.preventDefault();
