@@ -70,7 +70,10 @@ type Message struct {
 	FromAddress  string `json:"from_address"`
 	Subject      string `json:"subject"`
 	Body         string `json:"body"`
-	ReceivedAt   string `json:"received_at"`
+	// BodyHTML is the message's text/html part, "" when it had none. It is
+	// omitted from JSON when empty so existing API clients see no new field.
+	BodyHTML   string `json:"body_html,omitempty"`
+	ReceivedAt string `json:"received_at"`
 }
 
 // NewMessage is a parsed inbound message awaiting storage.
@@ -80,6 +83,7 @@ type NewMessage struct {
 	From        string
 	Subject     string
 	Body        string
+	BodyHTML    string
 	DeliveryKey string
 }
 

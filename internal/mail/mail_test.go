@@ -56,6 +56,46 @@ func TestParsePrefersPlainTextOverHTML(t *testing.T) {
 	if got.HTMLOnly {
 		t.Error("HTMLOnly = true when a plain text part was available")
 	}
+	// The HTML part is kept separately so the web client can render it; Body
+	// stays the plain text version for API consumers.
+	if got.HTML != "<p>the html version</p>" {
+		t.Errorf("HTML = %q, want the html part", got.HTML)
+	}
+}
+
+func TestParsePlainTextHasNoHTMLPart(t *testing.T) {
+	raw := []byte("Subject: No html\r\n" +
+		"Content-Type: text/plain; charset=utf-8\r\n" +
+		"\r\n" +
+		"just text\r\n")
+
+	got, err := mail.Parse(raw)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if got.HTML != "" {
+		t.Errorf("HTML = %q, want empty for a text/plain message", got.HTML)
+	}
+}
+
+func TestParseHTMLOnlyKeepsMarkupInBothFields(t *testing.T) {
+	raw := []byte("Subject: HTML only\r\n" +
+		"Content-Type: text/html; charset=utf-8\r\n" +
+		"\r\n" +
+		"<p>Hello <b>there</b></p>\r\n")
+
+	got, err := mail.Parse(raw)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	// Body keeps the historical behaviour: the HTML source, for API clients
+	// that predate the separate field.
+	if got.Body != "<p>Hello <b>there</b></p>" {
+		t.Errorf("Body = %q, want the html source", got.Body)
+	}
+	if got.HTML != got.Body {
+		t.Errorf("HTML = %q, want it to match Body for an HTML-only message", got.HTML)
+	}
 }
 
 func TestParseHTMLOnlyIsStoredAsText(t *testing.T) {

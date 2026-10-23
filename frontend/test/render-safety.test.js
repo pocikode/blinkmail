@@ -1,14 +1,18 @@
 /*
  * Frontend safety tests for Blinkmail.
  *
- * These prove the central security requirement from the plan: untrusted mail
- * content (sender, subject, body) and error text are rendered inertly, so
- * incoming HTML or script cannot execute in a reader's browser.
+ * These prove the central security requirements of the reader:
+ *
+ *  1. untrusted text (sender, subject, plain-text body, error text) is rendered
+ *     inertly, so incoming HTML or script cannot execute in a reader's browser;
+ *  2. an HTML mail part IS rendered as markup, but only inside a sandboxed
+ *     frame that cannot run script, cannot reach the app's document, and whose
+ *     content is scrubbed before it is placed there.
  *
  * Approach: the REAL shipped index.html is parsed into a linkedom DOM and the
  * REAL app.js is evaluated against it. app.js declares its rendering helpers
- * (renderMessages, showError, showEmptyState) as top-level functions, so after
- * evaluation they are reachable as globals. Each test calls those real
+ * (renderMessages, showError, showEmptyState, ...) as top-level functions, so
+ * after evaluation they are reachable as globals. Each test calls those real
  * functions with attacker-controlled input and asserts on the resulting DOM.
  *
  * Why this catches regressions: linkedom's innerHTML setter parses markup into
@@ -17,6 +21,9 @@
  * payload would appear here as live
  * <script>/<img>/<a> elements and these assertions would fail. Rendering
  * through textContent/createElement leaves the same payload as inert text.
+ *
+ * The HTML-mail tests inspect the frame document string (the iframe's srcdoc)
+ * that the real renderer produced, which is exactly what a browser would load.
  *
  * Run with: npm test   (from the frontend/ directory)
  */
@@ -72,6 +79,7 @@ function boot() {
   window.setTimeout = setTimeout;
   window.clearTimeout = clearTimeout;
   window.isSecureContext = false;
+  window.innerHeight = 900;
   window.confirm = () => true;
 
   const define = (name, value) =>
@@ -96,7 +104,9 @@ function boot() {
   // exact shipped ones — nothing is redefined here.
   const exported = (0, eval)(
     APP_JS +
-      '\n;({ renderMessages, renderApiKeys, showError, showEmptyState, showToast });',
+      '\n;({ renderMessages, renderApiKeys, showError, showEmptyState, showToast,' +
+      ' toggleMessage, createMailFrame, mailFrameDocument, sanitizeMailHtml,' +
+      ' htmlToText, fitMailFrame, refitMailFrames });',
   );
 
   return { window, document, ...exported };
@@ -245,4 +255,185 @@ test('showToast renders its message as inert text', () => {
   assert.ok(toast.textContent.includes('<img src=x'), 'toast payload not shown as text');
 
   assertNoPoisonRan();
+});
+
+// ---------------------------------------------------------------------------
+// HTML mail
+//
+// An HTML part must be rendered as markup (that is the point), but only inside
+// a frame that cannot run script. These tests drive the real renderer and then
+// inspect the frame document string it produced.
+// ---------------------------------------------------------------------------
+
+const HTML_BODY =
+  '<div style="font-family:Arial">' +
+  '<h1>Hello</h1><p>Real <b>markup</b> renders here.</p>' +
+  '<script>window.__PWNED_HTML=1</script>' +
+  '<img src="https://tracker.example/pixel.gif" onerror="window.__PWNED_HTML=1">' +
+  '<a href="javascript:window.__PWNED_HTML=1">bad link</a>' +
+  '<a href="https://example.com/real">real link</a>' +
+  '<iframe src="https://evil.example/x"></iframe>' +
+  '<form action="https://evil.example"><input name="x"><button>go</button></form>' +
+  '</div>';
+
+function htmlMessage(html) {
+  return {
+    id: 'msg_html',
+    inbox_address: 'victim@mail.example.com',
+    from_address: 'news@example.org',
+    subject: 'Weekly digest',
+    body: 'text fallback',
+    body_html: html,
+    received_at: '2026-10-21T06:00:00.000Z',
+  };
+}
+
+test('an HTML body is rendered as markup, inside a scriptless sandboxed frame', () => {
+  api.renderMessages([htmlMessage(HTML_BODY)]);
+
+  const list = api.document.getElementById('messageList');
+  const item = list.querySelector('.message-item');
+  assert.ok(item, 'message did not render');
+
+  // Collapsed: a text preview only. No frame exists yet, so listing an inbox
+  // never loads a remote image or builds a document per message.
+  assert.equal(item.querySelectorAll('iframe').length, 0, 'frame built before expanding');
+  const preview = item.querySelector('.message-body');
+  assert.ok(preview.textContent.includes('Real markup renders here'), 'preview missing mail text');
+  assert.ok(!preview.textContent.includes('<b>'), 'preview leaked raw markup');
+
+  api.toggleMessage(item);
+
+  const frame = item.querySelector('iframe');
+  assert.ok(frame, 'expanding an HTML message did not create a frame');
+
+  // The sandbox must never grant scripting.
+  const sandbox = frame.getAttribute('sandbox') || '';
+  assert.ok(!/allow-scripts/.test(sandbox), 'sandbox allows scripts: ' + sandbox);
+
+  const doc = frame.getAttribute('srcdoc') || '';
+
+  // The frame declares its own policy: nothing loads except images and CSS.
+  assert.ok(doc.includes('Content-Security-Policy'), 'frame document has no CSP');
+  assert.ok(doc.includes("default-src 'none'"), 'CSP does not deny by default');
+
+  // Scrubbed: no script, no handlers, no javascript: URL, no nested frame or
+  // form that could navigate or submit somewhere.
+  assert.ok(!/<script/i.test(doc), 'script tag survived scrubbing');
+  assert.ok(!/onerror/i.test(doc), 'event handler survived scrubbing');
+  assert.ok(!/javascript:/i.test(doc), 'javascript: URL survived scrubbing');
+  assert.ok(!/<iframe/i.test(doc), 'nested iframe survived scrubbing');
+  assert.ok(!/<form/i.test(doc), 'form survived scrubbing');
+  assert.ok(!/<input/i.test(doc), 'form control survived scrubbing');
+
+  // ...while the actual markup is preserved, which is what was asked for.
+  assert.ok(doc.includes('<b>markup</b>'), 'HTML body was not rendered as markup');
+  assert.ok(doc.includes('https://example.com/real'), 'safe link was dropped');
+  assert.ok(doc.includes('target="_blank"'), 'link not forced into a new tab');
+
+  // The app's own document stayed inert: nothing from the mail was parsed into
+  // it, so no live script/img/on* exists there.
+  assert.deepEqual(dangerousNodes(list), NO_DANGER, 'mail leaked into the app document');
+  assert.equal(api.window.__PWNED_HTML, undefined, 'mail script executed');
+});
+
+test('collapsing an HTML message hides the frame and restores the preview', () => {
+  api.renderMessages([htmlMessage('<p>hello</p>')]);
+  const item = api.document.getElementById('messageList').querySelector('.message-item');
+  const preview = item.querySelector('.message-body');
+
+  api.toggleMessage(item);
+  const frame = item.querySelector('iframe');
+  assert.equal(frame.parentNode.hidden, false, 'frame host still hidden after expanding');
+  assert.equal(preview.hidden, true, 'preview not hidden behind the frame');
+
+  api.toggleMessage(item);
+  assert.equal(frame.parentNode.hidden, true, 'frame host not hidden after collapsing');
+  assert.equal(preview.hidden, false, 'preview not restored after collapsing');
+  // Re-expanding reuses the frame instead of rebuilding (and reloading) it.
+  api.toggleMessage(item);
+  assert.equal(item.querySelectorAll('iframe').length, 1, 'frame was rebuilt');
+});
+
+test('a long HTML body is capped and scrolls inside its frame', () => {
+  // 900px viewport * 0.62 share = 558px cap.
+  const stub = (contentHeight) => {
+    const toggles = {};
+    return {
+      style: {},
+      classList: {
+        toggle(name, on) { toggles[name] = on; },
+      },
+      toggles,
+      contentDocument: {
+        documentElement: { scrollHeight: contentHeight },
+        body: { scrollHeight: contentHeight },
+      },
+    };
+  };
+
+  const short = stub(120);
+  api.fitMailFrame(short);
+  assert.equal(short.style.height, '120px', 'short mail should fit its content');
+  assert.equal(short.toggles['is-capped'], false, 'short mail should not be capped');
+
+  const long = stub(4000);
+  api.fitMailFrame(long);
+  assert.equal(long.style.height, '558px', 'long mail should stop at the viewport cap');
+  assert.equal(long.toggles['is-capped'], true, 'long mail should scroll inside the frame');
+
+  // A one-line message must not become a sliver.
+  const tiny = stub(4);
+  api.fitMailFrame(tiny);
+  assert.equal(tiny.style.height, '48px', 'tiny mail should use the minimum height');
+});
+
+test('htmlToText produces a one-line preview and never runs or keeps markup', () => {
+  const text = api.htmlToText(
+    '<style>p{color:red}</style><p>First line</p>\n\n<p>Second   line</p>' +
+      '<script>window.__PWNED_HTML=1</script>',
+  );
+  assert.ok(text.includes('First line'), 'preview lost the body text');
+  assert.ok(text.includes('Second line'), 'preview lost the second paragraph');
+  assert.ok(!text.includes('<'), 'preview kept markup');
+  assert.ok(!text.includes('color:red'), 'preview kept stylesheet text');
+  assert.equal(api.window.__PWNED_HTML, undefined, 'preview executed mail script');
+});
+
+test('sanitizeMailHtml keeps formatting and drops every executable construct', () => {
+  const clean = api.sanitizeMailHtml(HTML_BODY);
+  assert.ok(typeof clean === 'string', 'sanitizer returned no markup');
+
+  assert.ok(clean.includes('<h1>Hello</h1>'), 'formatting was stripped');
+  assert.ok(clean.includes('<b>markup</b>'), 'formatting was stripped');
+  assert.ok(!/<script/i.test(clean), 'script survived');
+  assert.ok(!/onerror/i.test(clean), 'handler survived');
+  assert.ok(!/javascript:/i.test(clean), 'javascript: URL survived');
+  assert.ok(!/<form|<input|<button|<iframe/i.test(clean), 'dangerous element survived');
+
+  // Whitespace and control characters inside a scheme must not defeat the check.
+  const smuggled = api.sanitizeMailHtml('<a href="java\n\tscript:alert(1)">x</a>');
+  assert.ok(!/javascript:/i.test(smuggled.replace(/\s/g, '')), 'obfuscated javascript: URL survived');
+
+  // A relative URL would resolve against the frame and is refused too.
+  const relative = api.sanitizeMailHtml('<img src="/api/keys">');
+  assert.ok(!relative.includes('/api/keys'), 'relative URL survived');
+});
+
+test('a message with no HTML part still renders as plain text', () => {
+  api.renderMessages([
+    {
+      id: 'm_plain',
+      inbox_address: 'v@mail.example.com',
+      from_address: 'a@example.org',
+      subject: 'Plain',
+      body: 'line one\nline two',
+      received_at: '2026-10-21T06:00:00.000Z',
+    },
+  ]);
+
+  const item = api.document.getElementById('messageList').querySelector('.message-item');
+  assert.equal(item.querySelectorAll('iframe').length, 0, 'plain text got a frame');
+  assert.equal(item.querySelector('.message-html'), null, 'plain text got a frame host');
+  assert.ok(item.querySelector('.message-body').textContent.includes('line two'), 'body missing');
 });

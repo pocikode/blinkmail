@@ -412,8 +412,9 @@ Prolonged downtime will lose mail. A queue (Durable Object, KV, or a Worker
 retry backlog) is explicitly out of scope for this version.
 
 **Attachment handling:** attachments are not stored or downloadable. Only the
-subject and a text body are kept. HTML-only messages are stored as text and
-rendered inertly.
+subject and the body are kept: the `text/plain` part, plus the `text/html` part
+when the message had one. HTML mail is rendered as HTML in the web client, but
+only inside a sandboxed frame that cannot run script (see Security).
 
 ## Retention and cleanup
 
@@ -511,9 +512,16 @@ running can lose committed data.
   a client cannot register an arbitrary token, and random addresses are generated
   from secure randomness so they cannot be guessed or enumerated.
 - All SQL uses bound parameters; no user input is interpolated into queries.
-- Untrusted mail content (sender, subject, body) and error messages are rendered
-  through text nodes only, never `innerHTML`, so incoming HTML or script cannot
-  execute in a reader's browser.
+- Untrusted mail content (sender, subject, plain-text body) and error messages are
+  rendered through text nodes only, never `innerHTML`, so incoming HTML or script
+  cannot execute in a reader's browser.
+- An HTML mail part is rendered as HTML, but never in the app's own document: it
+  goes into a per-message `<iframe srcdoc>` that is sandboxed **without**
+  `allow-scripts`, so no script in it can run and it cannot reach the app's DOM,
+  cookies or storage. The markup is scrubbed first (script-bearing elements,
+  `on*` handlers and non-http(s) URLs removed) and the frame carries a
+  `default-src 'none'` CSP that allows only images and inline CSS. Collapsed
+  messages render a text preview, so listing an inbox fetches no remote image.
 - The container runs as `nonroot` (uid 65532) with `no-new-privileges`.
 
 ## Development

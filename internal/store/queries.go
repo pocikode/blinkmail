@@ -171,7 +171,7 @@ func (s *Store) IsInboxInSession(ctx context.Context, sessionID, address string)
 // Messages returns an inbox's messages, newest first.
 func (s *Store) Messages(ctx context.Context, address string) ([]Message, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, inbox_address, from_address, subject, body, received_at
+		SELECT id, inbox_address, from_address, subject, body, body_html, received_at
 		FROM messages
 		WHERE inbox_address = ?
 		ORDER BY received_at DESC, id DESC`, address)
@@ -183,7 +183,7 @@ func (s *Store) Messages(ctx context.Context, address string) ([]Message, error)
 	out := []Message{}
 	for rows.Next() {
 		var m Message
-		if err := rows.Scan(&m.ID, &m.InboxAddress, &m.FromAddress, &m.Subject, &m.Body, &m.ReceivedAt); err != nil {
+		if err := rows.Scan(&m.ID, &m.InboxAddress, &m.FromAddress, &m.Subject, &m.Body, &m.BodyHTML, &m.ReceivedAt); err != nil {
 			return nil, fmt.Errorf("store: scan message: %w", err)
 		}
 		out = append(out, m)
@@ -245,7 +245,7 @@ func (s *Store) InboxSummaries(ctx context.Context) ([]InboxSummary, error) {
 // filter stays on julianday() because it only has to compare two instants.
 func (s *Store) MessagesSince(ctx context.Context, address, since string, limit int) ([]Message, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, inbox_address, from_address, subject, body, received_at
+		SELECT id, inbox_address, from_address, subject, body, body_html, received_at
 		FROM messages
 		WHERE inbox_address = ?
 		  AND (? = '' OR julianday(received_at) > julianday(?))
@@ -259,7 +259,7 @@ func (s *Store) MessagesSince(ctx context.Context, address, since string, limit 
 	out := []Message{}
 	for rows.Next() {
 		var m Message
-		if err := rows.Scan(&m.ID, &m.InboxAddress, &m.FromAddress, &m.Subject, &m.Body, &m.ReceivedAt); err != nil {
+		if err := rows.Scan(&m.ID, &m.InboxAddress, &m.FromAddress, &m.Subject, &m.Body, &m.BodyHTML, &m.ReceivedAt); err != nil {
 			return nil, fmt.Errorf("store: scan message: %w", err)
 		}
 		out = append(out, m)
@@ -274,9 +274,9 @@ func (s *Store) MessagesSince(ctx context.Context, address, since string, limit 
 func (s *Store) GetMessage(ctx context.Context, id string) (Message, error) {
 	var m Message
 	err := s.db.QueryRowContext(ctx, `
-		SELECT id, inbox_address, from_address, subject, body, received_at
+		SELECT id, inbox_address, from_address, subject, body, body_html, received_at
 		FROM messages WHERE id = ?`, id,
-	).Scan(&m.ID, &m.InboxAddress, &m.FromAddress, &m.Subject, &m.Body, &m.ReceivedAt)
+	).Scan(&m.ID, &m.InboxAddress, &m.FromAddress, &m.Subject, &m.Body, &m.BodyHTML, &m.ReceivedAt)
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
 		return Message{}, fmt.Errorf("%w: message %s", ErrNotFound, id)
@@ -310,9 +310,9 @@ func (s *Store) DeliverMessage(ctx context.Context, m NewMessage) error {
 	}
 
 	if _, err := tx.ExecContext(ctx, `
-		INSERT INTO messages (id, inbox_address, from_address, subject, body, received_at, delivery_hash)
-		VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		m.ID, m.Inbox, m.From, m.Subject, m.Body, now, nullIfEmpty(m.DeliveryKey),
+		INSERT INTO messages (id, inbox_address, from_address, subject, body, body_html, received_at, delivery_hash)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		m.ID, m.Inbox, m.From, m.Subject, m.Body, m.BodyHTML, now, nullIfEmpty(m.DeliveryKey),
 	); err != nil {
 		if isDuplicateDelivery(err) {
 			return ErrDuplicateDelivery

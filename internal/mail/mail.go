@@ -5,9 +5,10 @@
 // (base64, quoted-printable), multipart nesting, and non-UTF-8 character sets.
 //
 // Attachments are deliberately ignored: Blinkmail stores only a subject and a
-// text body. When a message carries no text/plain part, the text/html part is
-// stored verbatim. The frontend renders every body through text nodes, so HTML
-// arrives as escaped text rather than being executed.
+// body. A text/html part is kept in its own field so the web client can render
+// real HTML mail; Body keeps its historical meaning (text/plain when present,
+// otherwise the HTML source) for API consumers. The client never injects that
+// HTML into its own document: it goes into a scriptless sandboxed frame.
 package mail
 
 import (
@@ -43,13 +44,17 @@ const truncationMarker = "\n\n[message truncated]"
 type Parsed struct {
 	// Subject is the decoded Subject header, or NoSubject when absent.
 	Subject string
-	// Body is the preferred text body. Plain text wins over HTML.
+	// Body is the preferred text body: plain text wins over HTML.
 	Body string
+	// HTML is the text/html part when the message carried one, otherwise "".
+	// The web client renders it in a sandboxed frame; API consumers keep using
+	// Body so their behaviour does not change.
+	HTML string
 	// From is the first address in the MIME From header, used only as a
 	// fallback when the SMTP envelope sender is the null reverse-path.
 	From string
-	// HTMLOnly reports that Body came from a text/html part. The frontend
-	// still renders it as escaped text.
+	// HTMLOnly reports that Body came from a text/html part and no text/plain
+	// part was present.
 	HTMLOnly bool
 }
 
@@ -128,6 +133,9 @@ func Parse(raw []byte) (Parsed, error) {
 	case html != "":
 		parsed.Body = normalize(html)
 		parsed.HTMLOnly = true
+	}
+	if html != "" {
+		parsed.HTML = normalize(html)
 	}
 
 	return parsed, nil

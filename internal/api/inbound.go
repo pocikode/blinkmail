@@ -90,6 +90,7 @@ func (s *Server) handleInbound(w http.ResponseWriter, r *http.Request) {
 		From:        sender,
 		Subject:     parsed.Subject,
 		Body:        parsed.Body,
+		BodyHTML:    parsed.HTML,
 		DeliveryKey: store.DeliveryHash(envelopeFrom, inbox, raw),
 	}
 

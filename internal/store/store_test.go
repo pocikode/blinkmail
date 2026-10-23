@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -81,16 +83,27 @@ func TestMigrationsAreRepeatable(t *testing.T) {
 		}
 	}
 
-	// schema_migrations must have recorded exactly one row per migration file
-	// (001_init, 002_auth, 003_api_keys, 004_api_key_scopes), so a re-run cannot
-	// have applied anything twice.
+	// schema_migrations must have recorded exactly one row per migration file,
+	// so a re-run cannot have applied anything twice. The expected count is read
+	// from the embedded set rather than hardcoded, so adding a migration does not
+	// silently weaken this check.
+	entries, err := fs.ReadDir(store.EmbeddedMigrations(), ".")
+	if err != nil {
+		t.Fatalf("read migrations: %v", err)
+	}
+	wantMigrations := 0
+	for _, e := range entries {
+		if !e.IsDir() && strings.HasSuffix(e.Name(), ".sql") {
+			wantMigrations++
+		}
+	}
 	var n int
 	if err := s.DB().QueryRowContext(context.Background(),
 		`SELECT COUNT(*) FROM schema_migrations`).Scan(&n); err != nil {
 		t.Fatalf("count migrations: %v", err)
 	}
-	if n != 4 {
-		t.Errorf("schema_migrations rows = %d, want 4", n)
+	if n != wantMigrations {
+		t.Errorf("schema_migrations rows = %d, want %d", n, wantMigrations)
 	}
 }
 
@@ -346,6 +359,58 @@ func TestDeliveryDeduplication(t *testing.T) {
 		t.Fatal(err)
 	} else if len(msgs) != 2 {
 		t.Errorf("messages = %d, want 2 after a genuinely different delivery", len(msgs))
+	}
+}
+
+func TestMessageBodyHTMLRoundTrips(t *testing.T) {
+	s, _ := openTemp(t)
+	ctx := context.Background()
+
+	const addr = "html@example.com"
+	msg := store.NewMessage{
+		ID: "html-1", Inbox: addr, From: "from@example.org",
+		Subject: "Rich", Body: "plain version",
+		BodyHTML:    "<p>rich <b>version</b></p>",
+		DeliveryKey: store.DeliveryHash("from@example.org", addr, []byte("html raw")),
+	}
+	if err := s.DeliverMessage(ctx, msg); err != nil {
+		t.Fatalf("deliver: %v", err)
+	}
+
+	// Every read path must return the HTML part, or the reader would silently
+	// fall back to plain text.
+	if got, err := s.Messages(ctx, addr); err != nil {
+		t.Fatal(err)
+	} else if len(got) != 1 || got[0].BodyHTML != msg.BodyHTML {
+		t.Fatalf("Messages BodyHTML = %q, want %q", got[0].BodyHTML, msg.BodyHTML)
+	}
+	if got, err := s.GetMessage(ctx, "html-1"); err != nil {
+		t.Fatal(err)
+	} else if got.BodyHTML != msg.BodyHTML {
+		t.Errorf("GetMessage BodyHTML = %q, want %q", got.BodyHTML, msg.BodyHTML)
+	}
+	if got, err := s.MessagesSince(ctx, addr, "", 10); err != nil {
+		t.Fatal(err)
+	} else if len(got) != 1 || got[0].BodyHTML != msg.BodyHTML {
+		t.Errorf("MessagesSince BodyHTML = %q, want %q", got[0].BodyHTML, msg.BodyHTML)
+	}
+
+	// A message without an HTML part reads back as empty, not as a NULL scan
+	// error, because the column is NOT NULL DEFAULT ''.
+	plain := store.NewMessage{
+		ID: "plain-1", Inbox: addr, From: "from@example.org",
+		Subject: "Plain", Body: "only text",
+		DeliveryKey: store.DeliveryHash("from@example.org", addr, []byte("plain raw")),
+	}
+	if err := s.DeliverMessage(ctx, plain); err != nil {
+		t.Fatalf("deliver plain: %v", err)
+	}
+	got, err := s.GetMessage(ctx, "plain-1")
+	if err != nil {
+		t.Fatalf("get plain: %v", err)
+	}
+	if got.BodyHTML != "" {
+		t.Errorf("plain message BodyHTML = %q, want empty", got.BodyHTML)
 	}
 }
 

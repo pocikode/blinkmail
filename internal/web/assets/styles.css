@@ -767,6 +767,35 @@ code {
   color: var(--ink-2);
 }
 
+/* An HTML body is a sandboxed frame, sized to its content by fitMailFrame().
+   The height here is the fallback used when the frame cannot be measured: it
+   keeps the mail readable and scrollable rather than clipping it. */
+.message-html {
+  margin-top: 9px;
+}
+
+.message-html-frame {
+  display: block;
+  width: 100%;
+  height: 240px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color-scheme: dark;
+}
+
+/* A capped frame scrolls internally, so long mail cannot push the rest of the
+   inbox off screen. */
+.message-html-frame.is-capped {
+  overflow-y: auto;
+}
+
+/* The class rules above outrank the UA's [hidden] rule, so hide explicitly. */
+.message-item.is-open .message-body[hidden],
+.message-html[hidden] {
+  display: none;
+}
+
 /* ------------------------------- Empty states ------------------------------ */
 
 .empty-state {

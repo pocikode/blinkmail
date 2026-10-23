@@ -399,6 +399,7 @@ Response `200` (array, newest first):
     "from_address": "sender@gmail.com",
     "subject": "Hello Blinkmail",
     "body": "This is the plain text body.",
+    "body_html": "<p>This is the <b>HTML</b> body.</p>",
     "received_at": "2026-10-21T04:59:23.317Z"
   }
 ]
@@ -406,9 +407,14 @@ Response `200` (array, newest first):
 
 Errors: `400` invalid address, `403` inbox not in this session.
 
-Bodies are plain text. When a message had no `text/plain` part, the `text/html`
-part is stored as-is; the frontend renders it through text nodes, so it displays
-as escaped text and cannot execute.
+`body` is the plain-text body: the `text/plain` part when the message had one,
+otherwise the `text/html` source, so a client that only reads `body` behaves as
+it always has. `body_html` carries the `text/html` part and is **omitted** when
+the message had none — it is present for both HTML-only messages and
+multipart/alternative ones.
+
+The web client renders `body_html` as HTML, inside a sandboxed `<iframe>` that
+cannot run script; `body` is what it shows for plain-text mail.
 
 ### POST `/api/inbound`
 
@@ -608,6 +614,7 @@ Response `200` (array, oldest first; the usual `store.Message` shape):
     "from_address": "sender@gmail.com",
     "subject": "Hello Blinkmail",
     "body": "This is the plain text body.",
+    "body_html": "<p>This is the <b>HTML</b> body.</p>",
     "received_at": "2026-10-21T18:15:48.768Z"
   }
 ]

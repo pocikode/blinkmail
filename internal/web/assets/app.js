@@ -1,9 +1,16 @@
 /*
  * Blinkmail web client.
  *
- * Messages are rendered safely: everything untrusted goes through textContent
- * and createElement rather than innerHTML, so any HTML or script in an incoming
- * email is left as inert text instead of executing in the reader's browser.
+ * Untrusted text (sender, subject, plain-text bodies, error text) is rendered
+ * through textContent and createElement, never innerHTML, so markup in a mail
+ * body cannot execute in the reader's browser.
+ *
+ * An HTML mail part is different: it has to be rendered as HTML to be readable.
+ * It is never injected into this document. Each message gets its own sandboxed
+ * <iframe> whose contents are a string we assemble ourselves (see "HTML mail"
+ * below): the mail is scrubbed, the frame cannot run script, and a CSP inside
+ * it blocks everything except images and inline CSS. If the browser cannot
+ * parse the mail, it falls back to showing the source as text.
  */
 'use strict';
 
@@ -714,11 +721,334 @@ async function loadMessages() {
   }
 }
 
+// ---- HTML mail -------------------------------------------------------------
+//
+// An HTML part is rendered, but never in this document: each message gets its
+// own <iframe> whose content is a string assembled here. Three independent
+// layers keep it inert:
+//
+//   1. the markup is scrubbed (script-bearing elements and event handlers
+//      removed) before it goes anywhere near a parser;
+//   2. the frame is sandboxed WITHOUT allow-scripts, so no script in it can
+//      ever run, and it cannot touch this page's DOM or storage;
+//   3. a Content-Security-Policy inside the frame blocks every subresource
+//      except images and inline styles.
+//
+// Layer 2 alone is sufficient, which is why a scrubber bug is not a code
+// execution bug here.
+
+// FRAME_CSP is the policy the frame's own document declares.
+var FRAME_CSP = [
+  "default-src 'none'",
+  'img-src data: cid: http: https:',
+  "style-src 'unsafe-inline'",
+  'font-src data:',
+  'media-src data:',
+  "form-action 'none'",
+  "base-uri 'none'",
+].join('; ');
+
+// FRAME_CSS keeps mail legible on the app's dark surface and stops wide tables
+// and images from forcing a horizontal scrollbar.
+var FRAME_CSS = [
+  ':root { color-scheme: dark; }',
+  'html, body { margin: 0; padding: 0; background: transparent; }',
+  'body { padding: 2px 2px 4px; font-family: ui-sans-serif, system-ui, ' +
+    '-apple-system, "Segoe UI", Roboto, sans-serif; font-size: 13px; ' +
+    'line-height: 1.62; color: #c9cdd6; overflow-wrap: anywhere; }',
+  'img { max-width: 100%; height: auto; }',
+  'table { max-width: 100%; border-collapse: collapse; }',
+  'pre, code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; ' +
+    'white-space: pre-wrap; overflow-wrap: anywhere; }',
+  'blockquote { margin: 0 0 0 12px; padding-left: 10px; ' +
+    'border-left: 2px solid #2b2e35; color: #9aa1ad; }',
+  'a { color: #ff8a5c; }',
+  'hr { border: 0; border-top: 1px solid #2b2e35; }',
+].join('\n');
+
+// DROP_TAGS are removed together with their contents: script-bearing or
+// navigation-bearing elements that legitimate mail does not need, and that
+// would only add attack surface inside the frame.
+var DROP_TAGS = {
+  script: true, noscript: true, iframe: true, frame: true, frameset: true,
+  object: true, embed: true, applet: true, param: true, link: true,
+  meta: true, base: true, form: true, input: true, button: true,
+  select: true, option: true, optgroup: true, textarea: true, template: true,
+};
+
+// DROP_ATTRS are removed by name wherever they appear. on* is handled
+// separately because it is a prefix.
+var DROP_ATTRS = {
+  srcdoc: true, formaction: true, action: true, ping: true, srcset: true,
+  dynsrc: true, lowsrc: true, background: true, 'http-equiv': true,
+  'xlink:href': true, xmlns: true,
+};
+
+// URL_ATTRS are attributes whose value is a URL and must pass isSafeUrl.
+var URL_ATTRS = { href: true, src: true, cite: true, poster: true, data: true };
+
+var SAFE_STYLE = /expression\s*\(|javascript\s*:|vbscript\s*:|-moz-binding|behavior\s*:/i;
+
+// parseMailFragment parses HTML into a detached container so it can be walked
+// and rewritten. innerHTML on a node that is not in the document never runs
+// script and never fetches resources, which is why it is safe for hostile
+// input. Returns null when the platform has no parser, so callers can fall
+// back to plain text.
+function parseMailFragment(html) {
+  try {
+    var box = document.createElement('div');
+    box.innerHTML = String(html);
+    return box;
+  } catch (err) {
+    return null;
+  }
+}
+
+// compactUrl lowercases a URL and strips the whitespace and control characters
+// that browsers ignore, so "java\nscript:alert(1)" cannot slip past a check.
+function compactUrl(value) {
+  return String(value).replace(/[\u0000-\u0020\u00a0]+/g, '').toLowerCase();
+}
+
+// isSafeUrl allows only the schemes mail legitimately links to. Anything else
+// (javascript:, vbscript:, data:text/html, blob:, relative paths that would
+// resolve against the frame) is refused.
+function isSafeUrl(tagName, attrName, value) {
+  var url = compactUrl(value);
+  if (url === '' || url.charAt(0) === '#') return true;
+  if (url.indexOf('http://') === 0 || url.indexOf('https://') === 0) return true;
+  if (attrName === 'href' && tagName === 'a' &&
+      (url.indexOf('mailto:') === 0 || url.indexOf('tel:') === 0)) {
+    return true;
+  }
+  if (attrName === 'src' && tagName === 'img' &&
+      (url.indexOf('data:image/') === 0 || url.indexOf('cid:') === 0)) {
+    return true;
+  }
+  return false;
+}
+
+// scrubNode rewrites one element in place. It runs before the fragment is
+// serialised into the frame, so the frame's document is already clean.
+function scrubNode(node) {
+  var tag = String(node.tagName || '').toLowerCase();
+
+  if (DROP_TAGS[tag]) {
+    if (node.parentNode) node.parentNode.removeChild(node);
+    return;
+  }
+
+  var attrs = [];
+  for (var i = 0; i < node.attributes.length; i++) {
+    attrs.push(node.attributes[i].name);
+  }
+
+  for (var j = 0; j < attrs.length; j++) {
+    var name = attrs[j];
+    var lower = String(name).toLowerCase();
+    var value = node.getAttribute(name);
+
+    if (lower.indexOf('on') === 0 && lower.length > 2) {
+      node.removeAttribute(name);
+      continue;
+    }
+    if (DROP_ATTRS[lower]) {
+      node.removeAttribute(name);
+      continue;
+    }
+    if (lower === 'style' && SAFE_STYLE.test(String(value))) {
+      node.removeAttribute(name);
+      continue;
+    }
+    if (URL_ATTRS[lower] && !isSafeUrl(tag, lower, value)) {
+      node.removeAttribute(name);
+    }
+  }
+
+  // A surviving link opens in a new tab: it must never replace the message
+  // with someone else's page.
+  if (tag === 'a' && node.getAttribute('href')) {
+    node.setAttribute('target', '_blank');
+    node.setAttribute('rel', 'noopener noreferrer nofollow');
+  }
+}
+
+// scrubFragment walks the parsed fragment depth-first, removing dropped
+// elements and attributes. The walk is done on a snapshot of the children
+// because scrubbing can detach nodes.
+function scrubFragment(root) {
+  var nodes = root.querySelectorAll('*');
+  for (var i = 0; i < nodes.length; i++) {
+    // A node inside a dropped parent is already gone from the tree; scrubbing
+    // it again is harmless but pointless, so skip detached nodes.
+    if (!root.contains(nodes[i])) continue;
+    scrubNode(nodes[i]);
+  }
+}
+
+// sanitizeMailHtml returns the scrubbed markup, or null when the platform has
+// no HTML parser and the caller must fall back to text.
+function sanitizeMailHtml(html) {
+  var box = parseMailFragment(html);
+  if (!box) return null;
+  scrubFragment(box);
+  return box.innerHTML;
+}
+
+// escapeHtml is the last-resort fallback: if the mail cannot be parsed, it is
+// shown as literal text inside the frame rather than being trusted.
+function escapeHtml(text) {
+  return String(text).replace(/[&<>"']/g, function (c) {
+    switch (c) {
+      case '&': return '&amp;';
+      case '<': return '&lt;';
+      case '>': return '&gt;';
+      case '"': return '&quot;';
+      default: return '&#39;';
+    }
+  });
+}
+
+// mailFrameDocument assembles the complete document for one message. The CSP
+// meta comes first so it governs everything the mail itself contributes.
+function mailFrameDocument(html) {
+  var clean = sanitizeMailHtml(html);
+  var body = clean === null ? '<pre>' + escapeHtml(html) + '</pre>' : clean;
+  return '<!doctype html><html><head><meta charset="utf-8">' +
+    '<meta http-equiv="Content-Security-Policy" content="' + FRAME_CSP + '">' +
+    '<base target="_blank">' +
+    '<style>' + FRAME_CSS + '</style>' +
+    '</head><body>' + body + '</body></html>';
+}
+
+// htmlToText extracts the readable text of an HTML part for the collapsed
+// preview, so a closed message never needs a frame (and never fetches a remote
+// image) just to show two lines.
+function htmlToText(html) {
+  var box = parseMailFragment(html);
+  if (!box) return '';
+  scrubFragment(box);
+  var drop = box.querySelectorAll('script, style, head, title');
+  for (var i = 0; i < drop.length; i++) {
+    if (drop[i].parentNode) drop[i].parentNode.removeChild(drop[i]);
+  }
+  var text = box.textContent || '';
+  return text.replace(/\s+/g, ' ').trim();
+}
+
+// MAIL_FRAME_MIN keeps a one-line message from collapsing into a sliver.
+var MAIL_FRAME_MIN = 48;
+// MAIL_FRAME_SHARE is the largest fraction of the viewport a single message
+// body may occupy before it starts scrolling internally.
+var MAIL_FRAME_SHARE = 0.62;
+
+// measureMailFrame returns the height the mail actually needs.
+//
+// A document's scrollHeight is never smaller than its viewport, so measuring
+// while the frame already has a height can only ever grow it (and a short
+// message would stay stuck at the fallback height). The frame is collapsed for
+// the measurement instead: layout is synchronous, so the value is read before
+// anything is painted and no flicker is visible.
+function measureMailFrame(frame, doc) {
+  var previous = frame.style.height;
+  frame.style.height = '0px';
+
+  var body = doc.body;
+  var content = Math.max(
+    doc.documentElement.scrollHeight || 0,
+    body ? (body.scrollHeight || 0) : 0,
+    // A body sized to 100% reports nothing useful; its box does.
+    body && body.getBoundingClientRect
+      ? (body.getBoundingClientRect().height || 0)
+      : 0);
+
+  frame.style.height = previous;
+  return content;
+}
+
+// fitMailFrame sizes the frame to its content, up to a share of the viewport.
+// Beyond that the frame keeps its capped height and the mail scrolls inside
+// it, which is what makes a long newsletter readable without pushing the rest
+// of the inbox off screen.
+function fitMailFrame(frame) {
+  var doc = null;
+  try {
+    doc = frame.contentDocument;
+  } catch (err) {
+    doc = null;
+  }
+  // Without same-origin access there is nothing to measure; the CSS height
+  // stands and the frame still scrolls.
+  if (!doc || !doc.documentElement) return;
+
+  var content = measureMailFrame(frame, doc);
+  if (!content) return;
+
+  var viewport = window.innerHeight || 800;
+  var cap = Math.max(MAIL_FRAME_MIN, Math.round(viewport * MAIL_FRAME_SHARE));
+  // Rounded up: a fractional height can leave a one-pixel scrollbar on short
+  // mail that would otherwise fit exactly.
+  var height = Math.min(Math.max(Math.ceil(content), MAIL_FRAME_MIN), cap);
+
+  frame.style.height = height + 'px';
+  frame.classList.toggle('is-capped', content > cap);
+}
+
+// createMailFrame builds the sandboxed frame for one HTML body.
+//
+// allow-same-origin is needed only to measure the content so the frame can fit
+// short mail; it grants no scripting power on its own (the combination with
+// allow-scripts is what is dangerous, and allow-scripts is never set).
+// allow-popups lets a link the reader clicks open in a new tab instead of
+// replacing the message.
+function createMailFrame(html, title) {
+  var frame = document.createElement('iframe');
+  frame.className = 'message-html-frame';
+  frame.setAttribute('sandbox', 'allow-same-origin allow-popups allow-popups-to-escape-sandbox');
+  frame.setAttribute('referrerpolicy', 'no-referrer');
+  frame.setAttribute('title', title ? 'Message body: ' + title : 'Message body');
+  frame.setAttribute('srcdoc', mailFrameDocument(html));
+
+  frame.addEventListener('load', function () {
+    fitMailFrame(frame);
+    // Images arrive after the load event and change the height; re-measuring
+    // once they settle keeps the frame from clipping a picture.
+    var doc = null;
+    try {
+      doc = frame.contentDocument;
+    } catch (err) {
+      doc = null;
+    }
+    if (doc && doc.images) {
+      for (var i = 0; i < doc.images.length; i++) {
+        doc.images[i].addEventListener('load', function () { fitMailFrame(frame); });
+        doc.images[i].addEventListener('error', function () { fitMailFrame(frame); });
+      }
+    }
+    window.setTimeout(function () { fitMailFrame(frame); }, 300);
+  });
+
+  return frame;
+}
+
+// refitMailFrames re-measures every frame on screen after a resize, since the
+// viewport share that caps them has changed.
+function refitMailFrames() {
+  var hosts = document.querySelectorAll('.message-html');
+  for (var i = 0; i < hosts.length; i++) {
+    // A hidden host has no layout, so measuring it would only return 0.
+    if (hosts[i].hidden || !hosts[i].firstChild) continue;
+    fitMailFrame(hosts[i].firstChild);
+  }
+}
+
 // renderMessages builds the message list with DOM nodes only.
 //
-// from_address, subject and body all come from strangers' email, so they are
-// assigned to textContent. HTML in a body therefore displays as literal text
-// instead of being parsed — that is the intended rendering for HTML-only mail.
+// from_address, subject and plain-text bodies come from strangers' email, so
+// they are assigned to textContent. An HTML body is rendered as HTML, but only
+// inside the sandboxed frame described above, and only once the message is
+// opened — a collapsed row shows a text preview so listing an inbox never
+// loads remote images.
 function renderMessages(messages) {
   els.messageCount.textContent = messages.length +
     (messages.length === 1 ? ' message' : ' messages');
@@ -747,12 +1077,30 @@ function renderMessages(messages) {
     var subject = el('h3',
       'message-subject' + (msg.subject ? '' : ' is-empty'),
       msg.subject || '(no subject)');
-    var body = el('p', 'message-body',
-      msg.body === undefined || msg.body === null ? '' : String(msg.body).trim());
+
+    var html = typeof msg.body_html === 'string' ? msg.body_html.trim() : '';
+    var text = msg.body === undefined || msg.body === null ? '' : String(msg.body).trim();
+
+    // The visible paragraph is always plain text: either the plain part, or a
+    // text preview of the HTML part. An HTML body therefore needs no frame —
+    // and fetches no remote image — until it is opened.
+    var preview = html ? htmlToText(html) : text;
+    if (!preview) preview = text;
+    var body = el('p', 'message-body', preview);
 
     item.appendChild(top);
     item.appendChild(subject);
     item.appendChild(body);
+
+    if (html) {
+      var frameHost = el('div', 'message-html');
+      frameHost.hidden = true;
+      // Kept as a property, not an attribute: it is the raw mail and must not
+      // be serialisable back into the page.
+      frameHost.mailHtml = html;
+      frameHost.mailSubject = msg.subject || '(no subject)';
+      item.appendChild(frameHost);
+    }
 
     item.addEventListener('click', function () { toggleMessage(item); });
     item.addEventListener('keydown', function (event) {
@@ -767,9 +1115,31 @@ function renderMessages(messages) {
 
 // toggleMessage expands one message. Collapsed bodies are clamped by CSS, so
 // the text is always present for search, copy and screen readers.
+//
+// For an HTML body the frame is built on first expand and then reused, so
+// opening and closing a message is free after the first time and a closed
+// message never holds a live document.
 function toggleMessage(item) {
   var open = item.classList.toggle('is-open');
   item.setAttribute('aria-expanded', open ? 'true' : 'false');
+
+  var host = item.querySelector('.message-html');
+  if (!host) return;
+
+  var preview = item.querySelector('.message-body');
+  if (open) {
+    if (!host.firstChild && host.mailHtml) {
+      host.appendChild(createMailFrame(host.mailHtml, host.mailSubject));
+    }
+    host.hidden = false;
+    if (preview) preview.hidden = true;
+    // A frame built while its host was hidden could not be measured, so it is
+    // measured again now that it has layout.
+    if (host.firstChild) fitMailFrame(host.firstChild);
+  } else {
+    host.hidden = true;
+    if (preview) preview.hidden = false;
+  }
 }
 
 // formatListTime keeps the list column narrow: the time for today, the word
@@ -954,6 +1324,10 @@ function init() {
   bind('createRandomBtn', function () { return createInbox(''); });
 
   els.errorDismiss.addEventListener('click', clearError);
+
+  // Mail frames are capped at a share of the viewport, so a resize changes how
+  // tall each one may be.
+  window.addEventListener('resize', refitMailFrames);
 
   els.inboxSelect.addEventListener('change', function () {
     clearError();
