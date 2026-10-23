@@ -273,7 +273,8 @@ const HTML_BODY =
   '<a href="javascript:window.__PWNED_HTML=1">bad link</a>' +
   '<a href="https://example.com/real">real link</a>' +
   '<iframe src="https://evil.example/x"></iframe>' +
-  '<form action="https://evil.example"><input name="x"><button>go</button></form>' +
+  '<form action="https://evil.example"><input name="x">' +
+  '<button>Confirm subscription</button></form>' +
   '</div>';
 
 function htmlMessage(html) {
@@ -410,6 +411,9 @@ test('sanitizeMailHtml keeps formatting and drops every executable construct', (
   assert.ok(!/onerror/i.test(clean), 'handler survived');
   assert.ok(!/javascript:/i.test(clean), 'javascript: URL survived');
   assert.ok(!/<form|<input|<button|<iframe/i.test(clean), 'dangerous element survived');
+  // The words inside a form/button are the point of a call-to-action mail, so
+  // the element is unwrapped rather than dropped with its text.
+  assert.ok(clean.includes('Confirm subscription'), 'call-to-action text was dropped');
 
   // Whitespace and control characters inside a scheme must not defeat the check.
   const smuggled = api.sanitizeMailHtml('<a href="java\n\tscript:alert(1)">x</a>');

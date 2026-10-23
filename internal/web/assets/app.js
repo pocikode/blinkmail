@@ -772,9 +772,14 @@ var FRAME_CSS = [
 var DROP_TAGS = {
   script: true, noscript: true, iframe: true, frame: true, frameset: true,
   object: true, embed: true, applet: true, param: true, link: true,
-  meta: true, base: true, form: true, input: true, button: true,
-  select: true, option: true, optgroup: true, textarea: true, template: true,
+  meta: true, base: true, template: true,
+  input: true, select: true, option: true, optgroup: true, textarea: true,
 };
+
+// UNWRAP_TAGS are replaced by their contents rather than deleted: real mail
+// puts the important words ("Reset password", "Confirm subscription") inside a
+// form and a button, so dropping the element must not drop the text.
+var UNWRAP_TAGS = { form: true, button: true };
 
 // DROP_ATTRS are removed by name wherever they appear. on* is handled
 // separately because it is a prefix.
@@ -828,6 +833,15 @@ function isSafeUrl(tagName, attrName, value) {
   return false;
 }
 
+// unwrapNode replaces an element with its children, keeping the text but
+// removing the element itself.
+function unwrapNode(node) {
+  var parent = node.parentNode;
+  if (!parent) return;
+  while (node.firstChild) parent.insertBefore(node.firstChild, node);
+  parent.removeChild(node);
+}
+
 // scrubNode rewrites one element in place. It runs before the fragment is
 // serialised into the frame, so the frame's document is already clean.
 function scrubNode(node) {
@@ -835,6 +849,10 @@ function scrubNode(node) {
 
   if (DROP_TAGS[tag]) {
     if (node.parentNode) node.parentNode.removeChild(node);
+    return;
+  }
+  if (UNWRAP_TAGS[tag]) {
+    unwrapNode(node);
     return;
   }
 
