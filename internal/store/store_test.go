@@ -414,6 +414,93 @@ func TestMessageBodyHTMLRoundTrips(t *testing.T) {
 	}
 }
 
+// TestBackfillMigrationRepairsLegacyHTMLBodies covers 006_backfill_body_html.
+//
+// Before 005_message_html existed, an HTML-only message kept its markup in
+// `body`, so after the column was added those rows read back with an empty
+// `body_html` and the reader rendered raw markup. The migration copies `body`
+// into `body_html`, but only for bodies that are recognisably HTML source.
+func TestBackfillMigrationRepairsLegacyHTMLBodies(t *testing.T) {
+	s, _ := openTemp(t)
+	ctx := t.Context()
+
+	const addr = "legacy@example.com"
+	if err := s.CreateInbox(ctx, addr); err != nil {
+		t.Fatalf("create inbox: %v", err)
+	}
+
+	// Three legacy-shaped rows written with raw SQL so `body_html` keeps its
+	// column default, exactly as rows stored before 005 look.
+	const (
+		htmlBody  = "<html><body><p>hi</p></body></html>"
+		plainBody = "hello\nworld"
+		prefilled = "<p>already</p>"
+	)
+	rows := []struct{ id, body, bodyHTML string }{
+		{"legacy-html", htmlBody, ""},
+		{"legacy-plain", plainBody, ""},
+		{"legacy-set", "<p>old</p>", prefilled},
+	}
+	for _, r := range rows {
+		if r.bodyHTML == "" {
+			if _, err := s.DB().ExecContext(ctx,
+				`INSERT INTO messages (id, inbox_address, from_address, body) VALUES (?, ?, ?, ?)`,
+				r.id, addr, "from@example.org", r.body); err != nil {
+				t.Fatalf("insert %s: %v", r.id, err)
+			}
+			continue
+		}
+		if _, err := s.DB().ExecContext(ctx,
+			`INSERT INTO messages (id, inbox_address, from_address, body, body_html) VALUES (?, ?, ?, ?, ?)`,
+			r.id, addr, "from@example.org", r.body, r.bodyHTML); err != nil {
+			t.Fatalf("insert %s: %v", r.id, err)
+		}
+	}
+
+	stmt, err := fs.ReadFile(store.EmbeddedMigrations(), "006_backfill_body_html.sql")
+	if err != nil {
+		t.Fatalf("read migration: %v", err)
+	}
+	// The file holds exactly one statement, so one Exec applies it whole.
+	if _, err := s.DB().ExecContext(ctx, string(stmt)); err != nil {
+		t.Fatalf("exec migration: %v", err)
+	}
+
+	bodyHTML := func(id string) string {
+		t.Helper()
+		var got string
+		if err := s.DB().QueryRowContext(ctx,
+			`SELECT body_html FROM messages WHERE id = ?`, id).Scan(&got); err != nil {
+			t.Fatalf("select body_html for %s: %v", id, err)
+		}
+		return got
+	}
+
+	if got := bodyHTML("legacy-html"); got != htmlBody {
+		t.Errorf("HTML row body_html = %q, want the body %q", got, htmlBody)
+	}
+	if got := bodyHTML("legacy-plain"); got != "" {
+		t.Errorf("plain row body_html = %q, want empty (must not be treated as HTML)", got)
+	}
+	if got := bodyHTML("legacy-set"); got != prefilled {
+		t.Errorf("pre-filled row body_html = %q, want %q", got, prefilled)
+	}
+
+	// Running the migration again must change nothing.
+	if _, err := s.DB().ExecContext(ctx, string(stmt)); err != nil {
+		t.Fatalf("re-exec migration: %v", err)
+	}
+	if got := bodyHTML("legacy-html"); got != htmlBody {
+		t.Errorf("after re-run HTML row body_html = %q, want %q", got, htmlBody)
+	}
+	if got := bodyHTML("legacy-plain"); got != "" {
+		t.Errorf("after re-run plain row body_html = %q, want empty", got)
+	}
+	if got := bodyHTML("legacy-set"); got != prefilled {
+		t.Errorf("after re-run pre-filled row body_html = %q, want %q", got, prefilled)
+	}
+}
+
 func TestDeliveryHashIsStableAndCollisionResistant(t *testing.T) {
 	raw := []byte("Subject: hi\n\nbody")
 
